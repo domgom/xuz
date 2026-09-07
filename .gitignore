@@ -1,0 +1,6 @@
+dist/
+*.test
+xuz
+.gopath/
+.gocache/
+.smokehome/

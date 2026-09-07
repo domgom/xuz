@@ -1,0 +1,7 @@
+ xuz · tf-plan         default
+┌─ALIAS─────────┐┌─ENV───────┐
+│ 🦙  llama     ││ 🏠  dev   │
+│ ⚙ ▸ tf-plan   ││     stag  │
+│     plain     ││ ⚠ ▸ prod  │
+└───────────────┘└───────────┘
+tf plan -var-file=prod.tfvars

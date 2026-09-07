@@ -1,0 +1,7 @@
+ xuz · llama       default
+┌─ALIAS───────┐┌─ENV─────┐
+│ ▸ llama     ││ ▸ dev   │
+│   tf-plan   ││   stag  │
+│   plain     ││   prod  │
+└─────────────┘└─────────┘
+llama-server --env dev
