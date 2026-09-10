@@ -1,6 +1,6 @@
 dist/
 *.test
-xuz
 .gopath/
 .gocache/
 .smokehome/
+/features.txt

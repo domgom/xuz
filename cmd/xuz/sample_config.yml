@@ -1,0 +1,111 @@
+# xuz configuration
+#
+# xuz renders one column per option group: the first column lists aliases,
+# then one column per group (here: model, then context). Enter runs the
+# command through sh with each selected option exported as an environment
+# variable named after its group (uppercased): model -> $MODEL, context ->
+# $CONTEXT. The variable is set to the selected option's LONG TEXT, not its
+# key. The command text is passed to the shell verbatim (the shell resolves
+# the $VAR / ${VAR} references), and the live preview, --dry-run, and the
+# clipboard all show the env prefix + the verbatim command, so what you see
+# is exactly what runs (copy-paste-runnable).
+#
+# An option is a key with either:
+#   - a scalar long text (the old form):  - 64k: 65536
+#   - nothing (no pair):                 - dev:        (long text = the key)
+#   - an object with icon + long_text:    - prod:
+#                                          icon: ⚠
+#                                          long_text: production
+# long_text may be omitted from the object (then it is the key text).
+#
+# The !default tag on an option's long text preselects that option (used
+# when neither history nor last_used matches); without a tag the first
+# option is preselected:
+#     - qwen-3.6-35B-A3B: !default /path/to/model.gguf
+#
+# The !colorXXXXXX tag colors the option's long text (or its icon) in the
+# given hex color: the long text when it is shown, the key when the long
+# text equals it (a leading '#' is accepted too). It is display-only: the
+# command still receives the plain long text. An option carries one tag
+# (!default or !color, not both); icons take !color only:
+#     - prod: !colorD30000 prod
+#     - prod:
+#         icon: !colorFF5555 ⚙
+#
+# Icons are literal text glyphs (an emoji or a nerd-font glyph), rendered
+# as-is in the column's leading icon slot — no files, no cache. Every column
+# (the alias column and each option column) has its own icon slot, as wide
+# as the widest icon in that column.
+#
+# Note: in YAML list items the space after "-" is required ("- 256k: 262144",
+# not "-256k: 262144").
+
+theme: default        # one of: default dracula gruvbox monokai catppuccin
+                      # solarized-dark solarized-light light — press t in the
+                      # TUI to cycle live, or define custom themes below.
+# needle: ▸           # selection marker glyph shown in the inactive columns
+                      # (default ▸); the active column shows the cursor
+                      # highlight instead of the needle.
+remember_last: 10     # how many launches to keep in ~/.xuz/history
+last_used:
+  - qwen-3.6-35B-A3B  # global preselection hints (option keys); the most
+                      # recent launch in the history wins over this.
+                      # (theme/needle/remember_last/last_used may also be
+                      # written directly under aliases:, next to the alias
+                      # names.)
+
+aliases:
+  llama:
+    icon: 🦙                      # optional: literal icon glyph shown at the
+                                  # left of the alias name; !colorXXXXXX
+                                  # colors it (icon: !colorFF5555 ⚙)
+    options:
+      model:
+        - qwen-3.8-27B: /home/models/Unsloth_mtp-Qwen3.8-27B-Q4_0.gguf
+        - qwen-3.6-35B-A3B: !default localweights_Qwen3.6-35B-A3B-MTP-IMAT-IQ4_XS-Q8nextn.gguf
+      context:
+        - 64k: 65536
+        - 256k: 262144            # the space after "-" is required in YAML
+      # $MODEL and $CONTEXT are injected by name from the groups above;
+      # the command runs through sh, so normal shell quoting applies.
+      command: exec llama-server -m "$MODEL" -c "$CONTEXT"
+    remember_last: 20             # optional per-alias override
+
+  whisper:
+    options:
+      model:
+        - large-v3: /home/models/whisper-large-v3.pt
+      command: whisper "$MODEL"
+
+# Optional extra env vars: name -> group (merged on top of the by-name vars)
+#   vars:
+#     CTX: context
+#
+# Optional per-alias template: a text/template that derives extra env vars
+# from the selected options. It is evaluated with the by-name vars as the dot
+# context; the result must be a list of "NAME=value" lines (one per line, '#'
+# starts a comment). The derived vars are merged on top of the by-name vars
+# and exported to the command. Safe functions: upper, lower, title, trim,
+# trimall, replace, contains, hasprefix, hassuffix, join, split, substr, len,
+# quote, int, add, sub, mul, div.
+#   template: |
+#     CTX_KB={{ div (int .CONTEXT) 1024 }}
+#     THREADS=4
+
+# Custom themes (merged over "default", or over a builtin of the same name):
+# themes:
+#   mytheme:
+#     bg: "#1a1b26"
+#     fg: "#c0caf5"
+#     accent: "#7aa2f7"
+#     selected: "#9ece6a"
+#     cursor_bg: "#24283b"
+#     cursor_fg: "#c0caf5"
+#     border: "#3b4261"
+#     border_active: "#7aa2f7"
+#     title: "#7aa2f7"
+#     muted: "#565f89"
+#     status: "#7aa2f7"
+#     help: "#565f89"
+#     error: "#f7768e"
+#     success: "#9ece6a"
