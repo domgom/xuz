@@ -1260,7 +1260,14 @@ func (m *model) handleVarsEditKey(msg tea.KeyMsg) {
 	v := m.varsFocus
 	switch {
 	case msg.Type == tea.KeyEsc:
-		m.cancelPrompt()
+		// Abort the in-place edit: a brand-new variable (created on the
+		// appended row) is discarded, an existing cell keeps its original
+		// text. The hover stays on the list, back in normal mode.
+		v.Editing = false
+		if v.Row >= len(m.varsKeys()) {
+			v.Row = max(0, len(m.varsKeys())-1)
+		}
+		m.varsStatus = ""
 		return
 	case msg.Type == tea.KeyEnter:
 		m.varsCommitCell()
@@ -1311,10 +1318,15 @@ func (m *model) varsCommitCell() {
 			delete(m.cfg.GlobalVariables, oldKey)
 		}
 		m.cfg.GlobalVariables[text] = val
-		v.Editing = false
 		// The hover stays on the created row: new variables are always added
 		// at the bottom of the list, so the cursor rests there too (the panel
-		// scrolls to keep it in view), whatever the name sorts to.
+		// scrolls to keep it in view), whatever the name sorts to. Committing
+		// a key moves the focus onto that row's value cell and starts editing
+		// it — creating a new variable is key-then-value in one flow, so the
+		// user can type the value right after the key.
+		v.Col = varValue
+		v.Editing = true
+		v.Buf = []rune(val) // an empty buffer for a fresh variable; the carried-over value on a rename
 		m.varsSaveNow()
 		return
 	}
@@ -1766,10 +1778,11 @@ func (m *model) globalsPanelLines() []string {
 	if totalRows < visible {
 		visible = totalRows
 	}
-	// Keep the hovered row in view. The window always reserves a slot for
-	// the appended row while focused, so reaching it scrolls the list one
-	// more position: the create hint never obscures the new variable's key
-	// entry (the previous page's last row scrolls out to make room).
+	// Keep the hovered row in view. While focused, the window always ends on
+	// the appended row: it is rendered as the last slot of the panel, so when
+	// the hover reaches it the list scrolls one more position (the first
+	// visible variable scrolls out) and the key entry plus the hint stay
+	// visible — nothing above is obscured.
 	top := 0
 	if focus && totalRows > 0 {
 		r := m.varsFocus.Row
@@ -1782,8 +1795,8 @@ func (m *model) globalsPanelLines() []string {
 		if r >= top+visible {
 			top = r - visible + 1
 		}
-		if m.varsFocus.Row >= nrows && top > 0 {
-			top-- // one more position: make room for the appended row
+		if m.varsFocus.Row >= nrows {
+			top = totalRows - visible // the appended row is the last slot
 		}
 		if top < 0 {
 			top = 0
@@ -1891,7 +1904,7 @@ func (m *model) createHintLine(w int) string {
 	enterSpan := bold.Render(m.sty.HelpKey.Render(keyEnter))
 	spaceSpan := bold.Render(m.sty.HelpKey.Render(keySpace))
 	mid := m.sty.Help.Render(" / ")
-	tail := m.sty.Help.Render(" select create")
+	tail := m.sty.Help.Render(" new")
 	line := enterSpan + mid + spaceSpan + tail
 	return padRight(line, w)
 }

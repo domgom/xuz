@@ -3250,23 +3250,14 @@ func TestVariablesNewAndFlush(t *testing.T) {
 		t.Fatalf("space on the appended row should start editing its key, got %+v", v)
 	}
 	typeStr(t, m, "ENV")
-	send(t, m, enterKey) // commit the key cell
+	send(t, m, enterKey) // commit the key cell -> focus moves to the value col, edit starts
 	if cfg.GlobalVariables["ENV"] != "" {
 		t.Errorf("after committing the key, GlobalVariables = %+v", cfg.GlobalVariables)
 	}
-	if v.Editing {
-		t.Fatal("editing should be done after committing the key")
-	}
-	// The hover re-lands on the committed row's key; right moves to its value.
-	send(t, m, tea.KeyMsg{Type: tea.KeyRight})
-	if v.Col != varValue {
-		t.Fatalf("right should hover the value cell, got %v", v.Col)
-	}
-	// Edit the value in place and commit it.
-	send(t, m, spaceKey)
 	if !v.Editing || v.Col != varValue {
-		t.Fatal("space should start editing the hovered value cell")
+		t.Fatalf("after the key commit, the value cell should be editing, got col=%v editing=%v", v.Col, v.Editing)
 	}
+	// The buffer is empty for a fresh variable; type the value and commit it.
 	typeStr(t, m, "dev")
 	send(t, m, enterKey) // commit the value cell
 	if cfg.GlobalVariables["ENV"] != "dev" {
@@ -3301,12 +3292,12 @@ func TestVariablesInvalidKeyRejected(t *testing.T) {
 		send(t, m, tea.KeyMsg{Type: tea.KeyBackspace})
 	}
 	typeStr(t, m, "OK_KEY")
-	send(t, m, enterKey)
-	if m.varsFocus.Editing {
-		t.Fatal("valid key should commit and end the edit")
-	}
+	send(t, m, enterKey) // commit the key -> value edit starts
 	if _, ok := cfg.GlobalVariables["OK_KEY"]; !ok {
 		t.Errorf("GlobalVariables = %+v", cfg.GlobalVariables)
+	}
+	if !m.varsFocus.Editing || m.varsFocus.Col != varValue {
+		t.Fatalf("after the key commit, the value cell should be editing, got col=%v editing=%v", m.varsFocus.Col, m.varsFocus.Editing)
 	}
 }
 
@@ -3841,15 +3832,15 @@ global_variables:
 		t.Fatalf("row = %d, want 2 (the appended row)", m.varsFocus.Row)
 	}
 	view := ansi.Strip(m.View())
-	if !strings.Contains(view, "create") {
-		t.Errorf("the create hint should show while the appended row is hovered:\n%s", view)
+	if !strings.Contains(view, " new") {
+		t.Errorf("the new hint should show while the appended row is hovered:\n%s", view)
 	}
 	// The hint sits in the panel's bottom line (same place as save messages):
 	// it must appear after the last variable row and before the closing border.
 	panelLines := strings.Split(strings.Join(m.globalsPanelLines(), "\n"), "\n")
 	hintIdx, betaIdx, closeIdx := -1, -1, -1
 	for i, l := range panelLines {
-		if strings.Contains(l, "create") {
+		if strings.Contains(l, " new") {
 			hintIdx = i
 		}
 		if strings.Contains(l, "BETA") {
@@ -3919,15 +3910,22 @@ global_variables:
 	if strings.Index(view, "AAA") < strings.Index(view, "ZLAST") {
 		t.Errorf("AAA must be listed at the bottom (after ZLAST):\n%s", view)
 	}
-	// The save message is transient: moving down onto the appended row again
-	// brings it back with the create hint.
+	// The key commit left the value cell editing; esc cancels that edit and
+	// keeps the hover on the new row. Then down reaches the appended row.
+	send(t, m, escKey)
+	if m.varsFocus.Editing {
+		t.Fatal("esc should cancel the value edit")
+	}
+	if m.varsFocus.Row != 2 {
+		t.Fatalf("row = %d, want 2 (the new row)", m.varsFocus.Row)
+	}
 	send(t, m, downKey)
 	if m.varsFocus.Row != 3 {
 		t.Fatalf("row = %d, want the appended row (3)", m.varsFocus.Row)
 	}
 	view = ansi.Strip(m.View())
-	if !strings.Contains(view, "create") {
-		t.Errorf("the appended row should be visible with the create hint:\n%s", view)
+	if !strings.Contains(view, " new") {
+		t.Errorf("the appended row should be visible with the new hint:\n%s", view)
 	}
 	if strings.Count(view, "variables saved to") != 0 {
 		t.Errorf("the save message should have cleared when the hover moved:\n%s", view)
@@ -4005,5 +4003,163 @@ func TestColumnsMutedWhileGlobalsFocused(t *testing.T) {
 	view = m.View()
 	if !strings.Contains(columnBorder(view), activeSGR) {
 		t.Errorf("esc should restore the active border on the focused column:\n%s", view)
+	}
+}
+
+// TestGlobalsEscAbortsNewVariable guards that pressing esc while creating a
+// new variable on the appended row aborts the creation: nothing is saved, the
+// edit ends, and the hover returns to the last real row. Esc while editing an
+// existing cell just cancels the edit (the original text is untouched).
+func TestGlobalsEscAbortsNewVariable(t *testing.T) {
+	cfg := cfgFromYAML(t, `aliases:
+  tf-plan:
+    options:
+      env:
+        - dev: !default
+      command: terraform plan ${ENV}
+global_variables:
+  ALPHA: a
+`)
+	m := newModel(t, cfg, "tf-plan")
+	m.View()
+	send(t, m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("v")})
+	// Move to the appended row and start creating.
+	send(t, m, downKey)
+	send(t, m, spaceKey)
+	typeStr(t, m, "PARTIAL")
+	if !m.varsFocus.Editing {
+		t.Fatal("should be editing the new key")
+	}
+	// Esc aborts: no variable is created, the edit ends, hover back on ALPHA.
+	send(t, m, escKey)
+	if len(cfg.GlobalVariables) != 1 {
+		t.Fatalf("abort must not save a variable, got %+v", cfg.GlobalVariables)
+	}
+	if _, ok := cfg.GlobalVariables["PARTIAL"]; ok {
+		t.Error("the aborted key must not be saved")
+	}
+	if m.varsFocus == nil || m.varsFocus.Editing {
+		t.Fatalf("esc should end the edit and keep the panel focused, got %+v", m.varsFocus)
+	}
+	if m.varsFocus.Row != 0 {
+		t.Errorf("hover should return to the last real row (0), got %d", m.varsFocus.Row)
+	}
+	// Esc while editing an existing cell: cancels the edit, text untouched.
+	send(t, m, spaceKey) // edit ALPHA's key in place
+	typeStr(t, m, "ZZZ")
+	send(t, m, escKey)
+	if cfg.GlobalVariables["ALPHA"] != "a" {
+		t.Errorf("the original value must be kept, got %+v", cfg.GlobalVariables)
+	}
+	if m.varsFocus.Editing {
+		t.Error("esc should cancel the edit")
+	}
+}
+
+// TestGlobalsAppendedRowVisibleBeyondMaxRows guards the case where the
+// variable list is longer than the panel's max rows: moving onto the appended
+// row still renders it (as the last slot, after one extra scroll position),
+// and creating a new variable on it shows the buffer live — nothing above is
+// obscured, and space/enter on the appended row creates instead of editing
+// the last visible variable.
+func TestGlobalsAppendedRowVisibleBeyondMaxRows(t *testing.T) {
+	cfg := cfgFromYAML(t, `aliases:
+  tf-plan:
+    options:
+      env:
+        - dev: !default
+      command: terraform plan ${ENV}
+global_variables:
+  rainbow: ""
+  val: ""
+  zephyr: ""
+  zuu: ""
+  jim: ""
+  extra1: ""
+  extra2: ""
+`)
+	m := newModel(t, cfg, "tf-plan")
+	m.View()
+	send(t, m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("v")})
+	// Hover to the last variable (row 6), then down onto the appended row.
+	for i := 0; i < 6; i++ {
+		send(t, m, downKey)
+	}
+	if m.varsFocus.Row != 6 {
+		t.Fatalf("row = %d, want 6 (last variable)", m.varsFocus.Row)
+	}
+	send(t, m, downKey)
+	if m.varsFocus.Row != 7 {
+		t.Fatalf("row = %d, want 7 (the appended row)", m.varsFocus.Row)
+	}
+	// The panel must show the appended row (empty slot + hint), with the list
+	// scrolled so the last variable is visible just above it.
+	view := ansi.Strip(m.View())
+	if !strings.Contains(view, " new") {
+		t.Errorf("the new hint should be visible on the appended row:\n%s", view)
+	}
+	if strings.Index(view, "zuu") < 0 || strings.Index(view, "extra2") >= 0 {
+		t.Errorf("the list should be scrolled (last var zuu visible, extra2 scrolled out):\n%s", view)
+	}
+	// Space on the appended row creates a new variable; the buffer is visible.
+	send(t, m, spaceKey)
+	if !m.varsFocus.Editing {
+		t.Fatal("space should start creating on the appended row")
+	}
+	typeStr(t, m, "NEWKEY")
+	view = ansi.Strip(m.View())
+	if !strings.Contains(view, "NEWKEY") {
+		t.Errorf("the buffer should be visible while typing:\n%s", view)
+	}
+	// Commit: the new variable lands at the bottom and is saved.
+	send(t, m, enterKey)
+	if cfg.GlobalVariables["NEWKEY"] != "" {
+		t.Errorf("GlobalVariables = %+v", cfg.GlobalVariables)
+	}
+	view = ansi.Strip(m.View())
+	if strings.Index(view, "NEWKEY") < 0 || strings.Index(view, "zuu") > strings.Index(view, "NEWKEY") {
+		t.Errorf("NEWKEY should be listed at the bottom (after zuu):\n%s", view)
+	}
+}
+
+// TestGlobalsKeyCommitMovesToValueColumn guards that committing a new
+// variable's key (enter) moves the focus onto that row's value cell — the
+// creation flow is key-then-value in one go, so the user can type the value
+// right after the key without re-navigating.
+func TestGlobalsKeyCommitMovesToValueColumn(t *testing.T) {
+	cfg := cfgFromYAML(t, `aliases:
+  tf-plan:
+    options:
+      env:
+        - dev: !default
+      command: terraform plan ${ENV}
+global_variables:
+  ENV: dev
+`)
+	m := newModel(t, cfg, "tf-plan")
+	m.View()
+	send(t, m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("v")})
+	// Move to the appended row and create a new variable.
+	send(t, m, downKey)
+	send(t, m, spaceKey)
+	typeStr(t, m, "NEWKEY")
+	send(t, m, enterKey) // commit the key
+	if m.varsFocus == nil {
+		t.Fatal("the panel should keep focus after the key commit")
+	}
+	if m.varsFocus.Col != varValue {
+		t.Errorf("after committing the key, focus should be on the value column, got %v", m.varsFocus.Col)
+	}
+	if !m.varsFocus.Editing {
+		t.Error("the value cell should be editing after the key commit")
+	}
+	if m.varsFocus.Row != 1 {
+		t.Errorf("focus should be on the new row (1), got %d", m.varsFocus.Row)
+	}
+	// The buffer is empty for a fresh variable; type the value and commit it.
+	typeStr(t, m, "thevalue")
+	send(t, m, enterKey) // commit the value
+	if cfg.GlobalVariables["NEWKEY"] != "thevalue" {
+		t.Errorf("GlobalVariables = %+v", cfg.GlobalVariables)
 	}
 }
