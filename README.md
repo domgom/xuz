@@ -41,9 +41,17 @@ with all the options:
 │ ▸ llama          │ ▸ qwen-3.8-27B  /home/models/Unsloth_mtp-...  │   64k   65536          │
 │   whisper        │   qwen-3.6-35B-A3B localweights_Qwen3.6-35B-..│   256k  262144        │
 └─────────────────┴───────────────────────────────────────────────┴────────────────────────┘
-$ exec llama-server -m "/home/models/Unsloth_mtp-Qwen3.8-27B-Q4_0.gguf" -c "65536"
+┌─ COMMAND ─────────────────────────────────────────────────────────────────────────────────┐
+│ $ exec llama-server -m "/home/models/Unsloth_mtp-Qwen3.8-27B-Q4_0.gguf" -c "65536"        │
+└───────────────────────────────────────────────────────────────────────────────────────────┘
 󱊷  exit · ↑↓←→ move · 󱁐 select · ↵ run · f filter · t theme
 ```
+
+The live preview is encapsulated in the bordered **COMMAND** panel at the
+bottom of the screen (styled like the columns): the env prefix + verbatim
+command that will run, re-rendered on every selection change. A command wider
+than the terminal wraps onto extra rows inside the panel instead of being cut;
+the column boxes shrink to make room.
 
 From the short mode, `/` switches to the full mode, and from the
 full mode it comes back, keeping the current alias, cursors,
@@ -96,9 +104,10 @@ verbatim command**, e.g.:
 $ CONTEXT='65536' MODEL='/home/models/....gguf' exec llama-server -m "$MODEL" -c "$CONTEXT"
 ```
 
-which is exactly what the shell will run (copy-paste-runnable). When the
-terminal is too narrow for a single line the preview wraps onto extra footer
-lines instead of being cut — the columns shrink to make room.
+which is exactly what the shell will run (copy-paste-runnable). In the full
+mode the preview lives in the bordered COMMAND panel at the bottom of the
+screen; when the terminal is too narrow for a single line it wraps onto extra
+rows inside the panel instead of being cut — the columns shrink to make room.
 
 ### Derived variables (optional template)
 

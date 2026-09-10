@@ -1245,10 +1245,11 @@ func TestFooterHelpLines(t *testing.T) {
 	}
 }
 
-// TestCommandPreviewWrapsInsteadOfCutting guards the live command preview on
-// a narrow terminal: it must overflow onto extra footer lines instead of
-// being truncated, and the column boxes must shrink to make room.
-func TestCommandPreviewWrapsInsteadOfCutting(t *testing.T) {
+// TestCommandPanelWrapsInsteadOfCutting guards the full mode's bottom COMMAND
+// panel on a narrow terminal: a wide preview must overflow onto extra rows
+// inside the bordered panel instead of being truncated, and the column boxes
+// must shrink to make room.
+func TestCommandPanelWrapsInsteadOfCutting(t *testing.T) {
 	path := "/very/long/path/to/models/Unsloth_Qwen3.8-27B-UD-IQ4_XS.gguf"
 	cfg := cfgFromYAML(t, "aliases:\n"+
 		"  llama:\n"+
@@ -1263,20 +1264,35 @@ func TestCommandPreviewWrapsInsteadOfCutting(t *testing.T) {
 	const width, height = 42, 20
 	send(t, m, tea.WindowSizeMsg{Width: width, Height: height})
 
-	lines := m.commandPreviewLines()
-	if len(lines) < 2 {
-		t.Fatalf("preview must wrap to multiple lines at %d cols, got %d", width, len(lines))
+	lines := m.commandPanelLines()
+	// The panel is a bordered box: a top border carrying the COMMAND label,
+	// content rows, then the bottom border.
+	if got := ansi.Strip(lines[0]); !strings.HasPrefix(got, "┌─") || !strings.Contains(got, "COMMAND") || !strings.HasSuffix(got, "┐") {
+		t.Errorf("panel top border = %q, want ┌─ ... COMMAND ... ┐", got)
+	}
+	if got := ansi.Strip(lines[len(lines)-1]); !strings.HasPrefix(got, "└") || !strings.HasSuffix(got, "┘") {
+		t.Errorf("panel bottom border = %q, want └ ... ┘", got)
+	}
+	content := lines[1 : len(lines)-1]
+	if len(content) < 2 {
+		t.Fatalf("preview must wrap to multiple content rows at %d cols, got %d", width, len(content))
 	}
 	for i, l := range lines {
-		if w := lipgloss.Width(l); w > width {
-			t.Errorf("preview line %d is %d cols wide (> %d)", i, w, width)
+		if w := lipgloss.Width(l); w != width {
+			t.Errorf("panel line %d is %d cols wide (want exactly %d)", i, w, width)
 		}
 	}
 	// Wrapping must not lose or add any text (whitespace at wrap points may
-	// differ, so compare with all whitespace compacted away).
+	// differ, so compare with all whitespace compacted away). Strip the box
+	// rails from each content row first.
+	var got strings.Builder
+	for _, l := range content {
+		s := ansi.Strip(l)
+		got.WriteString(strings.TrimSuffix(strings.TrimPrefix(s, "│ "), " │"))
+	}
 	compact := func(s string) string { return ansi.Strip(strings.ReplaceAll(s, " ", "")) }
-	if got, want := compact(strings.Join(lines, "")), compact(m.commandPreview()); got != want {
-		t.Errorf("wrapped preview text differs:\n got %q\nwant %q", got, want)
+	if g, w := compact(got.String()), compact(m.commandPreview()); g != w {
+		t.Errorf("wrapped preview text differs:\n got %q\nwant %q", g, w)
 	}
 	// The frame stays within the width, and the boxes shrink for the extra
 	// footer lines: view height = title + box + footer.
@@ -1293,6 +1309,59 @@ func TestCommandPreviewWrapsInsteadOfCutting(t *testing.T) {
 	}
 	if n, want := len(strings.Split(view, "\n")), 1+boxH+fn; n != want {
 		t.Errorf("view has %d lines, want %d (title + box %d + footer %d)", n, want, boxH, fn)
+	}
+}
+
+// TestCommandPanelBottom guards the full mode's bordered COMMAND panel at the
+// bottom of the screen: it encapsulates the live preview (env prefix +
+// verbatim command) in a box styled like the columns, below them — and short
+// mode has no such panel.
+func TestCommandPanelBottom(t *testing.T) {
+	cfg := loadCfg(t)
+	m := newModel(t, cfg, "llama")
+	view := m.View()
+	lines := strings.Split(view, "\n")
+
+	// The panel's top border carries the COMMAND label.
+	topIdx := -1
+	for i, l := range lines {
+		if s := ansi.Strip(l); strings.HasPrefix(s, "┌─") && strings.Contains(s, "COMMAND") {
+			topIdx = i
+			break
+		}
+	}
+	if topIdx < 0 {
+		t.Fatalf("view missing the COMMAND panel top border:\n%s", view)
+	}
+	// Its content row holds the live preview inside the box rails.
+	panel := lines[topIdx+1]
+	if got := ansi.Strip(panel); !strings.Contains(got, "$ CONTEXT='65536' MODEL='/models/big.gguf' llama-server") {
+		t.Errorf("panel content = %q", got)
+	}
+	// Single-line preview here: the bottom border follows the content row.
+	if bot := ansi.Strip(lines[topIdx+2]); !strings.HasPrefix(bot, "└") || !strings.HasSuffix(bot, "┘") {
+		t.Errorf("expected the panel bottom border at line %d, got %q", topIdx+2, bot)
+	}
+	// The panel sits below the column boxes: after every box bottom border
+	// (scan only above the panel — its own bottom border starts with └ too).
+	lastBoxBottom := -1
+	for i, l := range lines[:topIdx] {
+		if s := ansi.Strip(l); strings.HasPrefix(s, "└") {
+			lastBoxBottom = i
+		}
+	}
+	if topIdx <= lastBoxBottom {
+		t.Errorf("panel top border (line %d) should be below the column boxes (last bottom at line %d)", topIdx, lastBoxBottom)
+	}
+
+	// Short mode: no COMMAND panel.
+	sm, err := New(Options{Cfg: cfg, Short: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	send(t, sm, tea.WindowSizeMsg{Width: 100, Height: 24})
+	if sv := sm.View(); strings.Contains(ansi.Strip(sv), "COMMAND") {
+		t.Errorf("short mode must not show the COMMAND panel:\n%s", sv)
 	}
 }
 

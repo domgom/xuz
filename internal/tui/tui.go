@@ -2015,7 +2015,8 @@ func (m *model) box(title string, rows []string, innerW int, active bool) string
 }
 
 // footerLines returns every footer line, top to bottom: the status/prompt/
-// search line(s), the optional info line, then the context help line(s).
+// command-panel line(s), the optional info line, then the context help
+// line(s).
 func (m *model) footerLines() []string {
 	var lines []string
 	lines = append(lines, m.footerStatusLines()...)
@@ -2031,9 +2032,10 @@ func (m *model) footer() string {
 }
 
 // footerStatusLines is the top footer line(s): an open prompt, a transient
-// status, or the live command preview. The active search renders no footer
-// line: its input lives inside the searched column (searchLine), as it is
-// contextual to that column's content.
+// status, or the live command panel (the bordered COMMAND box encapsulating
+// the preview). The active search renders no footer line: its input lives
+// inside the searched column (searchLine), as it is contextual to that
+// column's content.
 func (m *model) footerStatusLines() []string {
 	if m.prompt != nil {
 		if m.prompt.kind == promptInput {
@@ -2044,24 +2046,29 @@ func (m *model) footerStatusLines() []string {
 	if m.status != "" {
 		return []string{m.sty.Status.Render(padRight(m.status, m.width))}
 	}
-	return m.commandPreviewLines()
+	return m.commandPanelLines()
 }
 
-// commandPreviewLines is the live command preview as one or more footer
-// lines. A preview wider than the terminal is wrapped (word boundaries, with
-// long words hard-broken) instead of truncated, so it overflows onto extra
-// lines and is never cut; the column boxes shrink to make room because their
-// height is derived from the footer line count.
-func (m *model) commandPreviewLines() []string {
-	preview := m.commandPreview()
-	if lipgloss.Width(preview) <= m.width {
-		return []string{padRight(preview, m.width)}
+// commandPanelLines is the live command preview as a full-width bordered
+// bottom panel: a "COMMAND" box (styled like the column boxes) whose content
+// rows are the wrapped preview text. A preview wider than the terminal's
+// inner width is wrapped (word boundaries, with long words hard-broken)
+// instead of truncated, so it overflows onto extra rows inside the panel and
+// is never cut; the column boxes shrink to make room because their height is
+// derived from the footer line count.
+func (m *model) commandPanelLines() []string {
+	innerW := m.width - 4
+	if innerW < 2 {
+		innerW = 2
 	}
-	var lines []string
-	for _, l := range strings.Split(cellbuf.Wrap(preview, m.width, ""), "\n") {
-		lines = append(lines, padRight(l, m.width))
+	// A trailing newline in the command (e.g. a YAML block scalar) would make
+	// Wrap emit one empty final row; it carries no content, drop it.
+	preview := strings.TrimRight(m.commandPreview(), "\n")
+	var rows []string
+	for _, l := range strings.Split(cellbuf.Wrap(preview, innerW, ""), "\n") {
+		rows = append(rows, padRight(l, innerW))
 	}
-	return lines
+	return strings.Split(m.box("command", rows, innerW, false), "\n")
 }
 
 // infoLine is the optional detail line toggled with "?".
