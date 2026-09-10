@@ -11,9 +11,6 @@ import (
 const saveRoundTripYAML = `
 theme: dracula
 remember_last: 5
-last_used:
-  - qwen-3.8-27B
-  - 256k
 themes:
   mytheme:
     title: bold red
@@ -90,8 +87,8 @@ func TestSaveRoundTrip(t *testing.T) {
 	if cfg1.RememberLast != cfg2.RememberLast {
 		t.Errorf("remember_last: %d != %d", cfg1.RememberLast, cfg2.RememberLast)
 	}
-	if !reflect.DeepEqual(cfg1.LastUsed, cfg2.LastUsed) {
-		t.Errorf("last_used: %v != %v", cfg1.LastUsed, cfg2.LastUsed)
+	if !reflect.DeepEqual(cfg1.SelectionPrecedence, cfg2.SelectionPrecedence) {
+		t.Errorf("selection_precedence: %v != %v", cfg1.SelectionPrecedence, cfg2.SelectionPrecedence)
 	}
 	if !reflect.DeepEqual(cfg1.CustomThemes, cfg2.CustomThemes) {
 		t.Errorf("custom themes: %v != %v", cfg1.CustomThemes, cfg2.CustomThemes)
@@ -166,7 +163,6 @@ func TestSaveEmptyAliases(t *testing.T) {
 	cfg := &Config{
 		Theme:           "default",
 		RememberLast:    10,
-		LastUsedByAlias: map[string][]string{"llama": {"256k"}},
 		CustomThemes:    map[string]map[string]string{},
 	}
 	dir := t.TempDir()
@@ -180,9 +176,6 @@ func TestSaveEmptyAliases(t *testing.T) {
 	}
 	if len(got.Aliases) != 0 {
 		t.Errorf("expected no aliases, got %d", len(got.Aliases))
-	}
-	if len(got.LastUsedByAlias["llama"]) != 1 || got.LastUsedByAlias["llama"][0] != "256k" {
-		t.Errorf("per-alias last_used lost: %v", got.LastUsedByAlias)
 	}
 }
 

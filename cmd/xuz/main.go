@@ -513,9 +513,9 @@ func doInit(pathFlag string) int {
 }
 
 // resolveAlias applies the selection_precedence (default: !default tag >
-// history > last_used > first option) to the named alias and returns the
-// alias, its resolved preselection per group (option key + source), and the
-// resolved environment variables.
+// history > first option) to the named alias and returns the alias, its
+// resolved preselection per group (option key + source), and the resolved
+// environment variables.
 func resolveAlias(aliasName string, cfg *config.Config) (*config.Alias, map[string]config.Resolved, map[string]string, error) {
 	var alias *config.Alias
 	for _, a := range cfg.Aliases {
@@ -531,20 +531,13 @@ func resolveAlias(aliasName string, cfg *config.Config) (*config.Alias, map[stri
 		}
 		return nil, nil, nil, fmt.Errorf("unknown alias %q (available: %s)", aliasName, strings.Join(names, ", "))
 	}
-	hints := []config.Hint{}
+	var hints []config.Hint
 	if entries, err := history.Load(history.Path()); err == nil {
 		if e := history.LatestFor(entries, aliasName); e != nil {
 			for _, s := range e.Sels {
 				hints = append(hints, config.Hint{Group: s.Group, Key: s.Key, Source: config.SourceHistory})
 			}
 		}
-	}
-	lastUsed := cfg.LastUsed
-	if per, ok := cfg.LastUsedByAlias[aliasName]; ok {
-		lastUsed = per
-	}
-	for _, k := range lastUsed {
-		hints = append(hints, config.Hint{Key: k, Source: config.SourceLastUsed})
 	}
 	sel := alias.ResolveSelectionsWith(cfg.PrecedenceList(), hints)
 	vars := map[string]string{}

@@ -1188,13 +1188,6 @@ func (m *model) ensureInited(idx int) {
 			hints = append(hints, config.Hint{Group: s.Group, Key: s.Key, Source: config.SourceHistory})
 		}
 	}
-	lastUsed := m.cfg.LastUsed
-	if per, ok := m.cfg.LastUsedByAlias[st.Name]; ok {
-		lastUsed = per
-	}
-	for _, k := range lastUsed {
-		hints = append(hints, config.Hint{Key: k, Source: config.SourceLastUsed})
-	}
 	res := alias.ResolveSelectionsWith(m.cfg.PrecedenceList(), hints)
 	for _, g := range st.Groups {
 		i := indexOfKey(g.Pairs, res[g.Name].Key)
@@ -1213,10 +1206,10 @@ func (m *model) ensureInited(idx int) {
 // sources as the option groups: a "history" level picks the most recent
 // launch in the history file (the needle is then rendered in the theme's
 // muted color), a "first" level the first alias (green). The built-in order
-// (default > history > last_used > first) resolves to history, else first —
-// aliases carry no !default tag and no last_used hint. An explicit start
-// alias (xuz <alias>) already set it. The cursor starts on the selected
-// alias, as group cursors start on their preselected option.
+// (default > history > first) resolves to history, else first — aliases
+// carry no !default tag. An explicit start alias (xuz <alias>) already set
+// it. The cursor starts on the selected alias, as group cursors start on
+// their preselected option.
 func (m *model) ensureAliasSel() {
 	if m.aliasSelInit {
 		return
