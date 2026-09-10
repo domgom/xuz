@@ -2712,6 +2712,46 @@ func TestAliasNeedleMutedFromHistory(t *testing.T) {
 	assertRowCellsHighlight(t, m, "cursor row", aliasBoxRow(t, m, "other"), 0)
 }
 
+// TestAliasPrecedenceFirst guards the selection_precedence on the alias
+// column: a custom order with "first" first puts the needle on the first
+// alias even when the history points elsewhere.
+func TestAliasPrecedenceFirst(t *testing.T) {
+	cfg := cfgFromYAML(t, `
+selection_precedence: [first]
+aliases:
+  llama:
+    options:
+      model:
+        - qwen-3.8-27B: /models/big.gguf
+        - qwen-3.6-35B-A3B: /models/small.gguf
+      command: llama-server -m "$MODEL"
+  other:
+    options:
+      model:
+        - m1: v1
+      command: echo other
+`)
+	if len(cfg.SelectionPrecedence) != 1 || cfg.SelectionPrecedence[0] != "first" {
+		t.Fatalf("precedence = %v, want [first]", cfg.SelectionPrecedence)
+	}
+	hp, entries := appendHistoryFor(t, "other")
+	m, err := New(Options{Cfg: cfg, HistPath: hp})
+	if err != nil {
+		t.Fatal(err)
+	}
+	m.history = entries
+	send(t, m, tea.WindowSizeMsg{Width: 100, Height: 24})
+	m.View()
+	// "first" wins over the history (other): the needle is on llama.
+	if m.selAlias != 0 || m.selAliasSrc != config.SourceFirst {
+		t.Fatalf("selection = %d (%s), want 0 (%s)",
+			m.selAlias, m.selAliasSrc, config.SourceFirst)
+	}
+	if m.curAlias != 0 {
+		t.Fatalf("cursor = %d, want 0 (starts on the selected alias)", m.curAlias)
+	}
+}
+
 // TestCustomNeedle guards the configurable needle glyph: a needle: set in the
 // config replaces the default ▸ in the inactive columns (the active column
 // still shows the cursor highlight, never the needle).

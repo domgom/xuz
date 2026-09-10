@@ -1195,7 +1195,7 @@ func (m *model) ensureInited(idx int) {
 	for _, k := range lastUsed {
 		hints = append(hints, config.Hint{Key: k, Source: config.SourceLastUsed})
 	}
-	res := alias.ResolveSelections(hints)
+	res := alias.ResolveSelectionsWith(m.cfg.PrecedenceList(), hints)
 	for _, g := range st.Groups {
 		i := indexOfKey(g.Pairs, res[g.Name].Key)
 		if i < 0 {
@@ -1209,26 +1209,38 @@ func (m *model) ensureInited(idx int) {
 }
 
 // ensureAliasSel resolves the selected alias (the ▸ needle row of the alias
-// column) once, with the same precedence the option groups use: the most
-// recent launch in the history (the needle is then rendered in the theme's
-// muted color), else the first alias (green). An explicit start alias
-// (xuz <alias>) already set it. The cursor starts on the selected alias, as
-// group cursors start on their preselected option.
+// column) once, walking the configured selection_precedence with the same
+// sources as the option groups: a "history" level picks the most recent
+// launch in the history file (the needle is then rendered in the theme's
+// muted color), a "first" level the first alias (green). The built-in order
+// (default > history > last_used > first) resolves to history, else first —
+// aliases carry no !default tag and no last_used hint. An explicit start
+// alias (xuz <alias>) already set it. The cursor starts on the selected
+// alias, as group cursors start on their preselected option.
 func (m *model) ensureAliasSel() {
 	if m.aliasSelInit {
 		return
 	}
 	m.aliasSelInit = true
-	for i := len(m.history) - 1; i >= 0; i-- {
-		if idx := m.aliasIndexByName(m.history[i].Alias); idx >= 0 {
-			m.selAlias = idx
-			m.selAliasSrc = config.SourceHistory
+	for _, source := range m.cfg.PrecedenceList() {
+		switch source {
+		case config.SourceHistory:
+			for i := len(m.history) - 1; i >= 0; i-- {
+				if idx := m.aliasIndexByName(m.history[i].Alias); idx >= 0 {
+					m.selAlias = idx
+					m.selAliasSrc = config.SourceHistory
+					break
+				}
+			}
+		case config.SourceFirst:
+			if m.selAliasSrc == "" && len(m.aliases) > 0 {
+				m.selAlias = 0
+				m.selAliasSrc = config.SourceFirst
+			}
+		}
+		if m.selAliasSrc != "" {
 			break
 		}
-	}
-	if m.selAliasSrc == "" {
-		m.selAlias = 0
-		m.selAliasSrc = config.SourceFirst
 	}
 	m.curAlias = m.selAlias
 }

@@ -512,10 +512,10 @@ func doInit(pathFlag string) int {
 	return 0
 }
 
-// resolveAlias applies the preselection priority (!default tag > history >
-// last_used > first option) to the named alias and returns the alias, its
-// resolved preselection per group (option key + source), and the resolved
-// environment variables.
+// resolveAlias applies the selection_precedence (default: !default tag >
+// history > last_used > first option) to the named alias and returns the
+// alias, its resolved preselection per group (option key + source), and the
+// resolved environment variables.
 func resolveAlias(aliasName string, cfg *config.Config) (*config.Alias, map[string]config.Resolved, map[string]string, error) {
 	var alias *config.Alias
 	for _, a := range cfg.Aliases {
@@ -546,7 +546,7 @@ func resolveAlias(aliasName string, cfg *config.Config) (*config.Alias, map[stri
 	for _, k := range lastUsed {
 		hints = append(hints, config.Hint{Key: k, Source: config.SourceLastUsed})
 	}
-	sel := alias.ResolveSelections(hints)
+	sel := alias.ResolveSelectionsWith(cfg.PrecedenceList(), hints)
 	vars := map[string]string{}
 	for _, g := range alias.Groups {
 		vars[strings.ToUpper(g)] = alias.GroupPairs[g][0].LongText

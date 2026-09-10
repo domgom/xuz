@@ -18,9 +18,14 @@
 #                                          long_text: production
 # long_text may be omitted from the object (then it is the key text).
 #
-# The !default tag on an option's long text preselects that option (used
-# when neither history nor last_used matches); without a tag the first
-# option is preselected:
+# Preselection: when you open an alias, each column starts on the option
+# resolved by the selection_precedence order — by default
+# "default > history > last_used > first": the !default-tagged option wins,
+# then the most recent launch in ~/.xuz/history, then your last_used hints,
+# then the first option. The top-level selection_precedence list reorders
+# these levels (first is always tried last as the fallback):
+#     selection_precedence: [history, last_used, default]
+# The !default tag marks a group's preselected option:
 #     - qwen-3.6-35B-A3B: !default /path/to/model.gguf
 #
 # The !colorXXXXXX tag colors the option's long text (or its icon) in the
@@ -47,12 +52,16 @@ theme: default        # one of: default dracula gruvbox monokai catppuccin
                       # (default ▸); the active column shows the cursor
                       # highlight instead of the needle.
 remember_last: 10     # how many launches to keep in ~/.xuz/history
+# selection_precedence: [history, last_used, default]
+                      # preselection order (see above); default is
+                      # "default > history > last_used > first"
 last_used:
-  - qwen-3.6-35B-A3B  # global preselection hints (option keys); the most
-                      # recent launch in the history wins over this.
-                      # (theme/needle/remember_last/last_used may also be
-                      # written directly under aliases:, next to the alias
-                      # names.)
+  - qwen-3.6-35B-A3B  # global preselection hints (option keys); with the
+                      # default order the most recent launch in the history
+                      # wins over these.
+                      # (theme/needle/remember_last/selection_precedence/
+                      # last_used may also be written directly under aliases:,
+                      # next to the alias names.)
 
 aliases:
   llama:

@@ -105,60 +105,145 @@ type Resolved struct {
 	Source string
 }
 
-// ResolveSelections picks one option key per option group.
-// Priority: the !default-tagged option > matching hints (in the order given)
-// > first option. A stale default (its key no longer exists in the group)
-// falls through to the hints.
-func (a *Alias) ResolveSelections(hints []Hint) map[string]Resolved {
-	out := map[string]Resolved{}
-	for _, g := range a.Groups {
-		pairs := a.GroupPairs[g]
-		if len(pairs) == 0 {
-			continue
-		}
-		// The !default tag wins over any hint.
+// defaultSelectionPrecedence is the built-in selection_precedence order, used
+// when the config sets none (or its value fails to parse): the !default tag
+// wins, then the most recent history launch, then the last_used hints, then
+// the first option.
+const defaultSelectionPrecedence = "default > history > last_used > first"
+
+// selectionPrecedenceLevels is the set of valid levels a
+// selection_precedence list may name (in no particular order).
+var selectionPrecedenceLevels = map[string]bool{
+	SourceDefault:  true,
+	SourceHistory:  true,
+	SourceLastUsed: true,
+	SourceFirst:    true,
+}
+
+// Precedence returns the configured selection_precedence list, or the
+// built-in default (default > history > last_used > first) when none is set.
+func (c *Config) Precedence() []string {
+	if len(c.SelectionPrecedence) > 0 {
+		return c.SelectionPrecedence
+	}
+	return DefaultPrecedence()
+}
+
+// resolveSource returns the option key of group g from the named source, or
+// "" when that source yields no candidate in this group. For SourceHistory
+// and SourceLastUsed the first hint (in hints order) whose key exists in the
+// group wins; for SourceDefault a stale default (key gone) yields nothing.
+// SourceFirst always yields a candidate (the first option).
+func (a *Alias) resolveSource(g, source string, hints []Hint) string {
+	pairs := a.GroupPairs[g]
+	switch source {
+	case SourceDefault:
 		if d, ok := a.Defaults[g]; ok {
 			for _, p := range pairs {
 				if p.Key == d {
-					out[g] = Resolved{Key: d, Source: SourceDefault}
-					break
+					return d // stale defaults (key gone) yield nothing
 				}
 			}
 		}
-		if _, ok := out[g]; !ok {
-			for _, h := range hints {
-				if h.Group != "" && h.Group != g {
-					continue
-				}
-				for _, p := range pairs {
-					if p.Key == h.Key {
-						out[g] = Resolved{Key: h.Key, Source: h.Source}
-						break
-					}
-				}
-				if _, ok := out[g]; ok {
-					break
+	case SourceHistory, SourceLastUsed:
+		for _, h := range hints {
+			if h.Source != source || (h.Group != "" && h.Group != g) {
+				continue
+			}
+			for _, p := range pairs {
+				if p.Key == h.Key {
+					return h.Key
 				}
 			}
 		}
-		if _, ok := out[g]; !ok {
-			out[g] = Resolved{Key: pairs[0].Key, Source: SourceFirst}
+	case SourceFirst:
+		if len(pairs) > 0 {
+			return pairs[0].Key
+		}
+	}
+	return ""
+}
+
+// ResolveSelections picks one option key per group using the built-in
+// precedence (default > history > last_used > first). The TUI and the
+// non-interactive resolver use PrecedenceList + ResolveSelectionsWith so the
+// configured selection_precedence applies.
+func (a *Alias) ResolveSelections(hints []Hint) map[string]Resolved {
+	return a.ResolveSelectionsWith(DefaultPrecedence(), hints)
+}
+
+// DefaultPrecedence returns the built-in selection_precedence order
+// (default > history > last_used > first), used when the config sets none.
+func DefaultPrecedence() []string {
+	out := make([]string, 0, 4)
+	for _, p := range strings.Split(defaultSelectionPrecedence, ">") {
+		out = append(out, strings.TrimSpace(p))
+	}
+	return out
+}
+
+// ResolveSelectionsWith picks one option key per group walking the given
+// precedence list: for each group, the first level that yields a candidate
+// wins — !default for SourceDefault (a stale default, whose key no longer
+// exists in the group, yields nothing), the first matching hint for
+// SourceHistory / SourceLastUsed, the first option for SourceFirst. The
+// Resolved.Source of each group records which level won.
+func (a *Alias) ResolveSelectionsWith(ordered []string, hints []Hint) map[string]Resolved {
+	out := map[string]Resolved{}
+	for _, g := range a.Groups {
+		if len(a.GroupPairs[g]) == 0 {
+			continue
+		}
+		for _, source := range ordered {
+			if key := a.resolveSource(g, source, hints); key != "" {
+				out[g] = Resolved{Key: key, Source: source}
+				break
+			}
 		}
 	}
 	return out
 }
 
+// PrecedenceList returns the effective selection_precedence for this config:
+// the configured list (with "first" always appended last as the final
+// fallback), or the built-in default order when none is set. The TUI uses it
+// to resolve both the option preselections and the initially selected alias
+// (the needle row of the alias column).
+func (c *Config) PrecedenceList() []string {
+	if len(c.SelectionPrecedence) == 0 {
+		return DefaultPrecedence()
+	}
+	out := make([]string, 0, len(c.SelectionPrecedence)+1)
+	for _, s := range c.SelectionPrecedence {
+		out = append(out, s)
+	}
+	if !inList(out, SourceFirst) {
+		out = append(out, SourceFirst)
+	}
+	return out
+}
+
+func inList(list []string, s string) bool {
+	for _, x := range list {
+		if x == s {
+			return true
+		}
+	}
+	return false
+}
+
 // Config is the parsed top-level configuration.
 type Config struct {
-	Path            string
-	Theme           string
-	Needle          string
-	RememberLast    int
-	LastUsed        []string
-	LastUsedByAlias map[string][]string
-	Aliases         []*Alias
-	CustomThemes    map[string]map[string]string
-	Warnings        []string
+	Path                string
+	Theme               string
+	Needle              string
+	RememberLast        int
+	SelectionPrecedence []string // selection_precedence levels, in priority order
+	LastUsed            []string
+	LastUsedByAlias     map[string][]string
+	Aliases             []*Alias
+	CustomThemes        map[string]map[string]string
+	Warnings            []string
 }
 
 // defaultNeedle is the selection marker glyph used when the config sets no
@@ -212,10 +297,10 @@ func Load(path string) (*Config, error) {
 }
 
 // Save writes the configuration back to path as YAML. It emits a canonical
-// layout (theme, needle, remember_last, last_used, themes, aliases) that
-// Load parses back without warnings, preserving alias, group, option and
-// default order. Map keys whose order is not user-visible (vars, custom
-// themes, per-alias last_used) are emitted in sorted order.
+// layout (theme, needle, remember_last, selection_precedence, last_used,
+// themes, aliases) that Load parses back without warnings, preserving alias,
+// group, option and default order. Map keys whose order is not user-visible
+// (vars, custom themes, per-alias last_used) are emitted in sorted order.
 func (c *Config) Save(path string) error {
 	var b strings.Builder
 	b.WriteString("# xuz configuration (written by xuz)\n")
@@ -226,6 +311,12 @@ func (c *Config) Save(path string) error {
 		b.WriteString("needle: " + yamlScalar(c.Needle) + "\n")
 	}
 	b.WriteString("remember_last: " + strconv.Itoa(c.RememberLast) + "\n")
+	if len(c.SelectionPrecedence) > 0 {
+		b.WriteString("selection_precedence:\n")
+		for _, s := range c.SelectionPrecedence {
+			b.WriteString("  - " + yamlScalar(s) + "\n")
+		}
+	}
 	if len(c.LastUsed) > 0 {
 		b.WriteString("last_used:\n")
 		for _, k := range c.LastUsed {
@@ -530,13 +621,18 @@ func parseRoot(root *yaml.Node) (*Config, error) {
 			cfg.Warnings = append(cfg.Warnings, fmt.Sprintf("remember_last: %q is not a number, using 10", v.Value))
 		}
 	}
+	if v, ok := findEntry(top, "selection_precedence"); ok {
+		list, warns := parseSelectionPrecedence(v)
+		cfg.SelectionPrecedence = list
+		cfg.Warnings = append(cfg.Warnings, warns...)
+	}
 	if v, ok := findEntry(top, "last_used"); ok {
 		cfg.LastUsed, cfg.LastUsedByAlias = parseLastUsed(v)
 	}
 	for _, e := range entries(top) {
 		key, val := e[0], e[1]
 		switch key.Value {
-		case "theme", "needle", "remember_last", "last_used":
+		case "theme", "needle", "remember_last", "selection_precedence", "last_used":
 			// already applied above
 		case "themes":
 			parseThemes(val, cfg)
@@ -597,6 +693,49 @@ func scalar(n *yaml.Node) string {
 	default:
 		return n.Value
 	}
+}
+
+// parseSelectionPrecedence parses the selection_precedence value: an ordered
+// list of levels (default, history, last_used, first) — a YAML sequence or a
+// single level — that decides which source preselects each option and alias.
+// It returns the cleaned list ("" entries dropped, duplicates keep their
+// first occurrence) plus warnings: unknown levels are warned about and
+// dropped; when nothing valid remains, the built-in default stays in force.
+func parseSelectionPrecedence(n *yaml.Node) ([]string, []string) {
+	var raw []string
+	switch n.Kind {
+	case yaml.SequenceNode:
+		for _, item := range n.Content {
+			if s := keyOf(item); s != "" {
+				raw = append(raw, strings.TrimSpace(s))
+			}
+		}
+	case yaml.ScalarNode:
+		raw = []string{strings.TrimSpace(n.Value)}
+	default:
+		return nil, []string{"selection_precedence: expected a list of levels (default, history, last_used, first), using the default order"}
+	}
+	if len(raw) == 0 {
+		return nil, []string{"selection_precedence: empty list, using the default order"}
+	}
+	out := make([]string, 0, len(raw))
+	var warns []string
+	seen := map[string]bool{}
+	for _, s := range raw {
+		if !selectionPrecedenceLevels[s] {
+			warns = append(warns, fmt.Sprintf("selection_precedence: unknown level %q (valid: default, history, last_used, first), ignoring it", s))
+			continue
+		}
+		if seen[s] {
+			continue
+		}
+		seen[s] = true
+		out = append(out, s)
+	}
+	if len(out) == 0 {
+		return nil, warns // the built-in default applies
+	}
+	return out, warns
 }
 
 func parseLastUsed(n *yaml.Node) ([]string, map[string][]string) {
@@ -678,6 +817,13 @@ func parseAliases(n *yaml.Node, cfg *Config, topKeys map[string]bool) {
 			cfg.Needle = keyOf(v)
 		}
 	}
+	if !topKeys["selection_precedence"] {
+		if v, ok := findEntry(n, "selection_precedence"); ok {
+			list, warns := parseSelectionPrecedence(v)
+			cfg.SelectionPrecedence = list
+			cfg.Warnings = append(cfg.Warnings, warns...)
+		}
+	}
 	for _, e := range entries(n) {
 		name, val := e[0].Value, e[1]
 		switch name {
@@ -686,7 +832,7 @@ func parseAliases(n *yaml.Node, cfg *Config, topKeys map[string]bool) {
 				cfg.LastUsed, cfg.LastUsedByAlias = parseLastUsed(val)
 			}
 			continue
-		case "remember_last", "theme", "needle":
+		case "remember_last", "theme", "needle", "selection_precedence":
 			continue // handled above
 		}
 		alias := &Alias{

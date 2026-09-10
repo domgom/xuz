@@ -147,12 +147,37 @@ the history — see Preselection).
 
 ### Preselection
 
-When you open an alias, the initial selection in each column is resolved by:
+When you open an alias, each option column starts on a preselected option,
+and the alias column's `▸` needle sits on the initially selected alias. Both
+are resolved by the same four **sources** (where a candidate selection can
+come from), in this default order:
 
-1. a `!default` tag on an option's long text in the group,
-2. the most recent launch of that alias in `~/.xuz/history`,
-3. `last_used` (a global list, or a per-alias map — the map wins),
-4. the first option in the group.
+| level | source | meaning |
+|---|---|---|
+| `default` | the `!default` tag | the option whose long text carries the `!default` tag in that group. A stale tag (its key no longer exists) yields nothing and the resolution falls through to the next level |
+| `history` | `~/.xuz/history` | the most recent launch of this alias (written automatically on every Enter; its depth is bounded by `remember_last`) |
+| `last_used` | the config's `last_used:` | your hand-written preselection hints — a global list, or a per-alias map that beats the global list. Unlike history, these are static: they pin a preferred option without depending on what you last ran |
+| `first` | nothing matched | the first option in the group (always available, so it is always tried last) |
+
+The order is **overridable** with the top-level `selection_precedence` list
+(a single level is accepted too):
+
+```yaml
+# history beats the !default tag; last_used and the default tag fall through:
+selection_precedence: [history, last_used, default]
+```
+
+The first level that yields a candidate wins per group (and per alias);
+`first` is always appended as the final fallback when you omit it. Unknown
+levels are warned about and dropped; an all-invalid list falls back to the
+built-in order. The setting also applies inside `aliases:` (next to the
+alias names), where the top level wins when both are present.
+
+So with the default order: a group's `!default` tag wins over everything,
+then the history, then `last_used`, then the first option. With
+`selection_precedence: [history]` your last-run options win over any
+`!default` tag — useful when you want the picker to "remember" what you
+actually ran rather than a pinned default.
 
 The selected option is marked `▸`, in the theme's `selected` color. When
 the selection was preselected from the history rather than from a `!default`
@@ -231,6 +256,12 @@ theme: default            # default | dracula | gruvbox | monokai | catppuccin
                           # highlight instead of the needle
 remember_last: 10         # history depth (default 10)
 
+# selection_precedence:   # preselection order (see "Preselection"): the first
+                          # level that yields a candidate wins per group.
+                          # default is "default > history > last_used > first"
+                          # (first is always tried last as the fallback)
+# selection_precedence: [history, last_used, default]
+
 last_used:                # preselection hints
   - qwen-3.6-35B-A3B      # global list of option keys
 # last_used:              # or per-alias map (beats the global list)
@@ -297,8 +328,8 @@ Notes:
 
 - Option groups render in the order they appear in the file.
 - `command` may live inside `options:` (as above) or directly under the alias.
-- `theme`, `needle`, `remember_last`, and `last_used` may also sit directly
-  under `aliases:` (next to the alias names, as in
+- `theme`, `needle`, `remember_last`, `selection_precedence`, and `last_used`
+  may also sit directly under `aliases:` (next to the alias names, as in
   `aliases: { llama: …, last_used: [qwen-3.6-35B-A3B], remember_last: 10 }`);
   they then mean the same as at the top level, and the top level wins when
   both are present.
@@ -309,10 +340,9 @@ Notes:
   (`- prod: {icon: ⚠, long_text: production}`), or nothing at all
   (`- dev:`): the no-pair form, where the long text is the key text.
   `long_text` may be omitted from the object (then it is the key text).
-- The `!default` tag on an option's long text preselects it (it wins over the
-  history preselection; the first option is preselected when no option is
-  tagged and there is no history or `last_used` match). In the object form
-  the tag rides on the `long_text` entry.
+- The `!default` tag on an option's long text preselects it (with the default
+  `selection_precedence` it wins over the history and `last_used` hints; see
+  Preselection). In the object form the tag rides on the `long_text` entry.
 - The `!colorXXXXXX` tag on an option's long text colors the option's key in
   the given hex color in its column; the long text, when shown next to the
   key, keeps the muted value color (`- stag: !colorFFD814 staging` shows
@@ -369,8 +399,9 @@ xuz --version
 --config PATH  config file (default $XUZ_CONFIG or ~/.xuz/config.yml)
 --theme NAME   override the theme for this run
 --dry-run      print the resolved command instead of running it (no history)
-               without a TTY it resolves non-interactively from
-               history > last_used > defaults and prints just the command
+               without a TTY it resolves non-interactively using the
+               selection_precedence order (default: default > history >
+               last_used > first) and prints just the command
 ```
 
 ## Shell completions

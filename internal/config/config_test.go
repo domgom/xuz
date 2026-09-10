@@ -364,6 +364,182 @@ aliases:
 	}
 }
 
+// TestSelectionPrecedenceConfig covers the selection_precedence setting:
+// parsing (top level and inside aliases), the custom order changing the
+// resolution, warnings for unknown levels, and the save round trip.
+func TestSelectionPrecedenceConfig(t *testing.T) {
+	// Top-level list, reversed: history beats the !default tag.
+	yaml := `
+selection_precedence:
+  - history
+  - last_used
+  - default
+aliases:
+  a:
+    options:
+      model:
+        - small: s
+        - big: b
+      command: echo $MODEL
+`
+	cfg, err := Load(writeCfg(t, yaml))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(cfg.Warnings) != 0 {
+		t.Errorf("warnings = %v", cfg.Warnings)
+	}
+	want := []string{"history", "last_used", "default"}
+	if len(cfg.SelectionPrecedence) != len(want) {
+		t.Fatalf("precedence = %v, want %v", cfg.SelectionPrecedence, want)
+	}
+	for i := range want {
+		if cfg.SelectionPrecedence[i] != want[i] {
+			t.Errorf("precedence[%d] = %q, want %q", i, cfg.SelectionPrecedence[i], want[i])
+		}
+	}
+	a := cfg.Aliases[0]
+	// The history hint (big) beats the !default tag on big? No: only "small"
+	// has no default here — add one to make it bite.
+	hints := []Hint{{Group: "model", Key: "big", Source: SourceHistory}}
+	sel := a.ResolveSelectionsWith(cfg.PrecedenceList(), hints)
+	if sel["model"].Key != "big" || sel["model"].Source != SourceHistory {
+		t.Errorf("model = %+v, want big/history (custom order)", sel["model"])
+	}
+
+	// Unknown level: warned and dropped; a duplicate keeps its first slot.
+	yaml2 := `
+selection_precedence:
+  - last_used
+  - bogus
+  - last_used
+aliases:
+  a:
+    options:
+      model:
+        - m1: v1
+      command: echo $MODEL
+`
+	cfg2, err := Load(writeCfg(t, yaml2))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := cfg2.SelectionPrecedence; len(got) != 1 || got[0] != "last_used" {
+		t.Errorf("precedence = %v, want [last_used]", got)
+	}
+	found := false
+	for _, w := range cfg2.Warnings {
+		if strings.Contains(w, `unknown level "bogus"`) {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("expected an unknown-level warning, got %v", cfg2.Warnings)
+	}
+
+	// All levels bogus: the built-in default stays in force.
+	yaml3 := `
+selection_precedence:
+  - bogus
+aliases:
+  a:
+    options:
+      model:
+        - m1: v1
+      command: echo $MODEL
+`
+	cfg3, err := Load(writeCfg(t, yaml3))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(cfg3.SelectionPrecedence) != 0 {
+		t.Errorf("precedence = %v, want empty (default applies)", cfg3.SelectionPrecedence)
+	}
+	if got := cfg3.PrecedenceList(); len(got) != 4 || got[0] != SourceDefault || got[3] != SourceFirst {
+		t.Errorf("effective precedence = %v, want the built-in default", got)
+	}
+
+	// Inside aliases: (next to the alias names), top level wins when both.
+	yaml4 := `
+selection_precedence: [default, first]
+aliases:
+  a:
+    options:
+      model:
+        - m1: v1
+      command: echo $MODEL
+  selection_precedence: [history, default]
+`
+	cfg4, err := Load(writeCfg(t, yaml4))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := cfg4.SelectionPrecedence; len(got) != 2 || got[0] != "default" || got[1] != "first" {
+		t.Errorf("precedence = %v, want [default first] (top level wins)", got)
+	}
+
+	// Save round trip: the value is written back and comes through.
+	dir := t.TempDir()
+	src := filepath.Join(dir, "src.yml")
+	if err := os.WriteFile(src, []byte(yaml), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	cfg1, err := Load(src)
+	if err != nil {
+		t.Fatal(err)
+	}
+	out := filepath.Join(dir, "out.yml")
+	if err := cfg1.Save(out); err != nil {
+		t.Fatal(err)
+	}
+	b1, err := os.ReadFile(out)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Contains(b1, []byte("selection_precedence:\n  - history\n  - last_used\n  - default\n")) {
+		t.Errorf("saved config lost the precedence list:\n%s", b1)
+	}
+	cfg2b, err := Load(out)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(cfg2b.SelectionPrecedence) != 3 || cfg2b.SelectionPrecedence[0] != "history" {
+		t.Errorf("precedence after round trip = %v", cfg2b.SelectionPrecedence)
+	}
+}
+
+// TestResolveSelectionsWithCustomOrder covers the resolver under a custom
+// selection_precedence: last_used above default, history below last_used.
+func TestResolveSelectionsWithCustomOrder(t *testing.T) {
+	a := &Alias{
+		Name:   "x",
+		Groups: []string{"model"},
+		GroupPairs: map[string][]Pair{
+			"model": {{Key: "small", LongText: "s"}, {Key: "big", LongText: "b"}},
+		},
+		Defaults: map[string]string{"model": "big"},
+	}
+	hints := []Hint{
+		{Group: "model", Key: "small", Source: SourceHistory},
+		{Key: "small", Source: SourceLastUsed},
+	}
+	// Built-in order: the !default tag (big) wins over both hints.
+	sel := a.ResolveSelections(hints)
+	if sel["model"].Key != "big" || sel["model"].Source != SourceDefault {
+		t.Errorf("model = %+v, want big/default", sel["model"])
+	}
+	// last_used first: the last_used hint (small) beats the default tag.
+	sel = a.ResolveSelectionsWith([]string{SourceLastUsed, SourceHistory, SourceDefault}, hints)
+	if sel["model"].Key != "small" || sel["model"].Source != SourceLastUsed {
+		t.Errorf("model = %+v, want small/last_used", sel["model"])
+	}
+	// history first: the history hint (small) beats the default tag.
+	sel = a.ResolveSelectionsWith([]string{SourceHistory, SourceDefault}, hints)
+	if sel["model"].Key != "small" || sel["model"].Source != SourceHistory {
+		t.Errorf("model = %+v, want small/history", sel["model"])
+	}
+}
+
 func TestDefaultKeyRemoved(t *testing.T) {
 	// The <group>_default key is no longer supported: it warns, sets no
 	// default, and the preselection falls back to the first option.
