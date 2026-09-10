@@ -849,13 +849,13 @@ func (m *model) prepareRun() {
 		g.Selected = g.Cursor
 		g.Src = srcUser
 	}
-	vars := m.currentVars(m.curAlias, st)
+	vars := m.fullVars(m.curAlias, st)
 	if m.dryRun {
 		cmd := alias.Command
 		if m.background {
 			cmd += " &"
 		}
-		m.dryCmd = cmdx.Substitute(cmd, vars)
+		m.dryCmd = cmdx.ExportPrefix(vars) + cmd
 		m.doQuit = true
 		return
 	}
@@ -1047,8 +1047,10 @@ func (m *model) saveThenQuit() {
 	m.doQuit = true
 }
 
-// resolvedCommand returns the selected alias's command line with the current
-// selections substituted, or "" when the alias has no command.
+// resolvedCommand returns the selected alias's command line with the env
+// prefix that will be in effect when it runs, or "" when the alias has no
+// command. The command text is verbatim (the shell resolves the $VAR refs);
+// the prefix makes the result copy-paste-runnable.
 func (m *model) resolvedCommand() string {
 	m.ensureAliasSel()
 	m.ensureInited(m.selAlias)
@@ -1056,7 +1058,7 @@ func (m *model) resolvedCommand() string {
 	if alias.Command == "" {
 		return ""
 	}
-	return cmdx.Substitute(alias.Command, m.currentVars(m.selAlias, m.aliases[m.selAlias]))
+	return cmdx.ExportPrefix(m.fullVars(m.selAlias, m.aliases[m.selAlias])) + alias.Command
 }
 
 // clipboardTools are tried in order before falling back to OSC 52.
@@ -1140,6 +1142,32 @@ func (m *model) currentVars(i int, st *aliasState) map[string]string {
 				vars[varName] = g.Pairs[g.Selected].LongText
 			}
 		}
+	}
+	return vars
+}
+
+// fullVars returns the env vars the command will run with: the by-name vars
+// (currentVars) plus any vars derived by the alias's optional template. A
+// template that fails to evaluate or parse is reported on the status line and
+// contributes no vars (the by-name vars still apply).
+func (m *model) fullVars(i int, st *aliasState) map[string]string {
+	vars := m.currentVars(i, st)
+	alias := m.cfg.Aliases[i]
+	if alias.Template == "" {
+		return vars
+	}
+	out, err := cmdx.EvalTemplate(alias.Template, vars)
+	if err != nil {
+		m.status = "template error: " + err.Error()
+		return vars
+	}
+	derived, err := cmdx.ParseDerivedVars(out)
+	if err != nil {
+		m.status = "template error: " + err.Error()
+		return vars
+	}
+	for k, v := range derived {
+		vars[k] = v
 	}
 	return vars
 }
@@ -2134,8 +2162,10 @@ func (m *model) wrapHelpItems(items []helpItem) []string {
 }
 
 // commandPreview shows what Enter will run: the alias under the cursor's
-// command with the option under the cursor in the active column substituted
-// (the needle is hidden in the active column; the cursor is the selection).
+// command with the env prefix that will be in effect (the needle is hidden in
+// the active column; the cursor is the selection). The command text is
+// verbatim — the shell resolves the $VAR refs — and the prefix shows the
+// exact assignments, so the preview is copy-paste-runnable.
 func (m *model) commandPreview() string {
 	m.ensureInited(m.curAlias)
 	alias := m.cfg.Aliases[m.curAlias]
@@ -2155,20 +2185,37 @@ func (m *model) commandPreview() string {
 			}
 		}
 	}
+	// The template-derived vars are part of the env the command will run
+	// with, so include them in the prefix (a template error is reported on
+	// the status line and contributes nothing).
+	vars = m.withDerivedVars(alias, vars)
 	out := m.sty.Status.Render("$ ")
-	last := 0
-	for _, loc := range cmdx.VarPattern.FindAllStringSubmatchIndex(alias.Command, -1) {
-		out += alias.Command[last:loc[0]]
-		name := cmdx.Name(alias.Command[loc[0]:loc[1]])
-		if v, ok := vars[name]; ok {
-			out += m.sty.Value.Render(v)
-		} else {
-			out += m.sty.Error.Render("$" + name)
-		}
-		last = loc[1]
-	}
-	out += alias.Command[last:]
+	out += m.sty.Value.Render(cmdx.ExportPrefix(vars))
+	out += alias.Command
 	return out
+}
+
+// withDerivedVars returns vars plus the alias's template-derived vars (when
+// the alias has a template). A template that fails to evaluate or parse is
+// reported on the status line and contributes no vars.
+func (m *model) withDerivedVars(alias *config.Alias, vars map[string]string) map[string]string {
+	if alias.Template == "" {
+		return vars
+	}
+	out, err := cmdx.EvalTemplate(alias.Template, vars)
+	if err != nil {
+		m.status = "template error: " + err.Error()
+		return vars
+	}
+	derived, err := cmdx.ParseDerivedVars(out)
+	if err != nil {
+		m.status = "template error: " + err.Error()
+		return vars
+	}
+	for k, v := range derived {
+		vars[k] = v
+	}
+	return vars
 }
 
 // cleanIcon collapses whitespace runs in an icon glyph (literal text: an

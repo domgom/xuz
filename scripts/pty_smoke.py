@@ -285,7 +285,9 @@ def test_default_select(binary, home):
     out = tty.read_until("M=")
     c = clean(out)
     check("renders columns", "echoer" in c and "MODEL" in c and "CONTEXT" in c, out[-1500:])
-    check("default selection shown", "M=/models/small.gguf C=10" in c, out[-1500:])
+    # The preview shows the env prefix (the assignments the command will run
+    # with) followed by the verbatim command; the shell resolves $MODEL/$CONTEXT.
+    check("default selection shown", "MODEL='/models/small.gguf'" in c and "CONTEXT='10'" in c, out[-1500:])
     tty.buf = b""  # drop the styled preview: it would match "small.gguf"
     tty.send(b"\r")  # enter: run
     out = tty.read_until("M=/models/small.gguf C=10")
@@ -356,8 +358,10 @@ def test_dry_run(binary, home):
         time.sleep(0.2)
     out = tty.buf.decode("utf-8", "replace")
     # The !default tag (small) wins over the history preselection (big);
-    # the printed line is styled, so match the stripped text
-    check("dry-run prints command", "echo M=/models/small.gguf C=10" in clean(out), out[-1500:])
+    # the printed line is the env prefix + the verbatim command, styled, so
+    # match the stripped text
+    check("dry-run prints command",
+          "CONTEXT='10' MODEL='/models/small.gguf' echo M=$MODEL C=$CONTEXT" in clean(out), out[-1500:])
     check("dry-run exits", tty.proc.poll() is not None)
     check("dry-run exit code 0", tty.finish() == 0)
     check("dry-run no history", len(history_lines(home)) == before, repr(history_lines(home)))
@@ -381,7 +385,9 @@ def test_history_preselect(binary, home):
     # !default tag, so it is preselected from the history (l).
     tty = TTY([binary, "-f", "echoer"], env_for(home), home)
     out = tty.read_until("M=")
-    check("preselect from history", "M=/models/small.gguf C=20" in clean(out), out[-1500:])
+    # The preview shows the env prefix with the preselected values (model from
+    # the !default tag, context from the history).
+    check("preselect from history", "MODEL='/models/small.gguf'" in clean(out) and "CONTEXT='20'" in clean(out), out[-1500:])
     tty.buf = b""  # drop the styled preview: it would match "/models/small.gguf"
     tty.send(b"\r")
     out = tty.read_until("M=/models/small.gguf C=20")
@@ -570,7 +576,7 @@ aliases:
         tty = TTY([binary, "-f", "tagged"], env_for(home), home)
         out = tty.read_until("M=")
         c = clean(out)
-        check("default preselected", "M=/models/big.gguf C=10" in c, out[-1500:])
+        check("default preselected", "MODEL='/models/big.gguf'" in c and "CONTEXT='10'" in c, out[-1500:])
         # The needle is hidden in the active column (MODEL): the cursor
         # highlight is the selection indicator. No hourglass badge anywhere.
         check("no hourglass anywhere", "⧖" not in c, c)
@@ -586,7 +592,7 @@ aliases:
         tty = TTY([binary, "-f", "tagged"], env_for(home), home)
         out = tty.read_until("M=")
         c = clean(out)
-        check("default beats history", "M=/models/big.gguf C=10" in c, out[-1500:])
+        check("default beats history", "MODEL='/models/big.gguf'" in c and "CONTEXT='10'" in c, out[-1500:])
         check("context needle on s (inactive column)", "▸ s" in c, c)
         check("no hourglass badge rendered", "⧖" not in c, c)
         tty.send(b"q")

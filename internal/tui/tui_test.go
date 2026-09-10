@@ -143,8 +143,9 @@ func TestViewRendersAllColumns(t *testing.T) {
 	mustContain(t, view, "ALIAS", "llama", "other", "▸ llama", "MODEL", "CONTEXT",
 		"qwen-3.8-27B", "qwen-3.6-35B-A3B", "64k", "256k")
 	// default preselection: model !default tag -> qwen-3.8-27B (value /models/big.gguf),
-	// context -> first (64k -> 65536), substituted by name in the preview
-	mustContain(t, view, "llama-server -m ", "/models/big.gguf", " -c ", "65536")
+	// context -> first (64k -> 65536). The preview shows the env prefix (the
+	// assignments the command will run with) followed by the verbatim command.
+	mustContain(t, view, "CONTEXT='65536'", "MODEL='/models/big.gguf'", "llama-server -m \"$MODEL\" -c \"$CONTEXT\"")
 	for i, line := range strings.Split(view, "\n") {
 		if w := lipgloss.Width(line); w > 100 {
 			t.Errorf("line %d is %d columns wide (> 100): %q", i, w, line)
@@ -497,8 +498,54 @@ func TestDryRunSubstitutesAndQuits(t *testing.T) {
 	if !m.doQuit {
 		t.Fatal("dry-run Enter should quit")
 	}
-	if m.dryCmd != `llama-server -m "/models/big.gguf" -c "65536"` {
+	if m.dryCmd != `CONTEXT='65536' MODEL='/models/big.gguf' llama-server -m "$MODEL" -c "$CONTEXT"` {
 		t.Errorf("dryCmd = %q", m.dryCmd)
+	}
+}
+
+// TestTemplateDerivedVarsInPreview guards the optional per-alias template:
+// it derives extra env vars from the selected options, and the preview shows
+// them in the env prefix (the command text stays verbatim).
+func TestTemplateDerivedVarsInPreview(t *testing.T) {
+	cfg := cfgFromYAML(t, `aliases:
+  llama:
+    options:
+      model:
+        - qwen-3.8-27B: !default /models/big.gguf
+      context:
+        - 64k: 65536
+      command: llama-server -m "$MODEL" -c "$CONTEXT" -t "$THREADS"
+      template: |
+        THREADS=4
+        CTX_KB={{ div (int .CONTEXT) 1024 }}
+`)
+	m := newModel(t, cfg, "llama")
+	view := m.View()
+	// The derived vars (THREADS, CTX_KB) appear in the env prefix, sorted.
+	mustContain(t, view, "CTX_KB='64'", "THREADS='4'", "llama-server -m \"$MODEL\"")
+}
+
+// TestTemplateErrorShowsStatus guards a template that fails to evaluate: the
+// error is reported on the status line and the by-name vars still apply.
+func TestTemplateErrorShowsStatus(t *testing.T) {
+	cfg := cfgFromYAML(t, `aliases:
+  llama:
+    options:
+      model:
+        - qwen-3.8-27B: !default /models/big.gguf
+      command: llama-server -m "$MODEL"
+      template: |
+        BAD={{ div 1 0 }}
+`)
+	m := newModel(t, cfg, "llama")
+	m.View()
+	if !strings.Contains(m.status, "template error") {
+		t.Errorf("status = %q, want a template error", m.status)
+	}
+	// The by-name var still appears in the prefix (the preview is shown when
+	// there is no status, but the var is still computed for the run).
+	if got := m.fullVars(0, m.aliases[0]); got["MODEL"] != "/models/big.gguf" {
+		t.Errorf("fullVars MODEL = %q, want /models/big.gguf", got["MODEL"])
 	}
 }
 
@@ -678,7 +725,7 @@ func TestCopyCommand(t *testing.T) {
 	if m.status != "command copied (OSC 52)" {
 		t.Fatalf("status = %q", m.status)
 	}
-	want := "\x1b]52;c;" + base64.StdEncoding.EncodeToString([]byte(`llama-server -m "/models/big.gguf" -c "65536"`)) + "\a"
+	want := "\x1b]52;c;" + base64.StdEncoding.EncodeToString([]byte(`CONTEXT='65536' MODEL='/models/big.gguf' llama-server -m "$MODEL" -c "$CONTEXT"`)) + "\a"
 	if got != want {
 		t.Errorf("OSC 52 payload = %q, want %q", got, want)
 	}
@@ -713,7 +760,7 @@ func TestCopyCommandViaClipboardTool(t *testing.T) {
 	if err != nil {
 		t.Fatalf("clipboard tool captured nothing: %v", err)
 	}
-	want := `llama-server -m "/models/big.gguf" -c "65536"`
+	want := `CONTEXT='65536' MODEL='/models/big.gguf' llama-server -m "$MODEL" -c "$CONTEXT"`
 	if string(got) != want {
 		t.Errorf("clipboard content = %q, want %q", got, want)
 	}
@@ -744,7 +791,7 @@ func TestCopyCommandFailingToolFallsThrough(t *testing.T) {
 	if m.status != "command copied (OSC 52)" {
 		t.Fatalf("status = %q", m.status)
 	}
-	want := "\x1b]52;c;" + base64.StdEncoding.EncodeToString([]byte(`llama-server -m "/models/big.gguf" -c "65536"`)) + "\a"
+	want := "\x1b]52;c;" + base64.StdEncoding.EncodeToString([]byte(`CONTEXT='65536' MODEL='/models/big.gguf' llama-server -m "$MODEL" -c "$CONTEXT"`)) + "\a"
 	if got != want {
 		t.Errorf("OSC 52 payload = %q, want %q", got, want)
 	}
@@ -980,7 +1027,7 @@ func TestSearchInputInsideColumn(t *testing.T) {
 	if strings.Contains(foot, "filter █") {
 		t.Errorf("the search input must not appear outside the column:\n%s", foot)
 	}
-	if !strings.Contains(ansi.Strip(foot), "$ llama-server") {
+	if !strings.Contains(ansi.Strip(foot), "$ CONTEXT='65536' MODEL='/models/big.gguf' llama-server") {
 		t.Errorf("footer should keep the live command preview while searching:\n%s", foot)
 	}
 
@@ -2778,8 +2825,8 @@ func TestFullModeOptionSelectsAlias(t *testing.T) {
 		t.Fatal("enter should run (dry)")
 	}
 	// dryCmd is resolved: llama's preselected options (the !default model,
-	// the first context).
-	if m.dryCmd != `llama-server -m "/models/big.gguf" -c "65536"` {
+	// the first context), shown as the env prefix + the verbatim command.
+	if m.dryCmd != `CONTEXT='65536' MODEL='/models/big.gguf' llama-server -m "$MODEL" -c "$CONTEXT"` {
 		t.Errorf("dryCmd = %q, want the selected alias' resolved command", m.dryCmd)
 	}
 }

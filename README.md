@@ -86,9 +86,49 @@ uppercased**, set to the **selected option's long text**:
 | `context` | `$CONTEXT` | `65536` |
 
 So `command: exec llama-server -m "$MODEL" -c "$CONTEXT"` is all you need.
-(The footer shows the command with variables substituted, live; when the
-terminal is too narrow for a single line it wraps onto extra footer lines
-instead of being cut — the columns shrink to make room.)
+The command text is passed to the shell **verbatim** — the shell resolves the
+`$VAR` / `${VAR}` references from the environment — so there is no separate
+substitution step that can drift from what actually runs. The live preview
+(footer), `--dry-run`, and the clipboard (`c`) all show the **env prefix + the
+verbatim command**, e.g.:
+
+```
+$ CONTEXT='65536' MODEL='/home/models/....gguf' exec llama-server -m "$MODEL" -c "$CONTEXT"
+```
+
+which is exactly what the shell will run (copy-paste-runnable). When the
+terminal is too narrow for a single line the preview wraps onto extra footer
+lines instead of being cut — the columns shrink to make room.
+
+### Derived variables (optional template)
+
+An alias may define a `template:` field — a `text/template` evaluated with the
+by-name vars as the dot context. Its output must be a list of `NAME=value`
+lines (one per line, `#` starts a comment); the derived vars are merged on top
+of the by-name vars and exported to the command. This is how you compute
+values from the selections, e.g. the context size in KiB:
+
+```yaml
+aliases:
+  llama:
+    options:
+      model:
+        - qwen-3.8-27B: /home/models/....gguf
+      context:
+        - 64k: 65536
+        - 256k: 262144
+      command: exec llama-server -m "$MODEL" -c "$CONTEXT" -t "$THREADS"
+      template: |
+        THREADS=4
+        CTX_KB={{ div (int .CONTEXT) 1024 }}
+```
+
+The template uses a small, pure function set (no filesystem, network, or
+process access): `upper`, `lower`, `title`, `trim`, `trimall`, `replace`,
+`contains`, `hasprefix`, `hassuffix`, `join`, `split`, `substr`, `len`,
+`quote`, `int`, `add`, `sub`, `mul`, `div`. A template that fails to evaluate
+or parse is reported on the status line (or stderr for `--dry-run` / `show`)
+and contributes no vars — the by-name vars still apply.
 
 After the command exits, xuz exits with the command's status — the picker
 never reopens, whatever the outcome (success or failure). To tweak one group
@@ -210,6 +250,11 @@ aliases:
 # Optional extra env vars: name -> group (merged on top of the by-name vars)
 #   vars:
 #     CTX: context
+#
+# Optional per-alias template: derives extra env vars from the selections
+# (see "Derived variables" above). The result is a list of NAME=value lines.
+#   template: |
+#     CTX_KB={{ div (int .CONTEXT) 1024 }}
 
 # Custom themes (merged over "default", or over a builtin of the same name):
 # themes:

@@ -71,6 +71,12 @@ type Alias struct {
 	Defaults     map[string]string // group -> preselected option key (!default tag)
 	Command      string
 	Vars         map[string]string // extra env var name -> group name (optional)
+	// Template is an optional text/template (per alias) that derives extra
+	// env vars from the selected options. It is evaluated with the by-name
+	// vars as the dot context; the result must be a list of "NAME=value"
+	// lines (one per line, '#' starts a comment). The derived vars are merged
+	// on top of the by-name vars and exported to the command.
+	Template     string
 	RememberLast int               // per-alias history depth, 0 = use top level
 	Warnings     []string
 }
@@ -273,6 +279,9 @@ func (c *Config) Save(path string) error {
 		}
 		if a.Command != "" {
 			b.WriteString("    command: " + yamlScalar(a.Command) + "\n")
+		}
+		if a.Template != "" {
+			b.WriteString("    template: " + yamlScalar(a.Template) + "\n")
 		}
 		if a.RememberLast != c.RememberLast {
 			b.WriteString("    remember_last: " + strconv.Itoa(a.RememberLast) + "\n")
@@ -746,6 +755,8 @@ func parseAliasBody(name string, val *yaml.Node, alias *Alias) {
 			alias.Icon, alias.IconColor = parseIcon(fmt.Sprintf("aliases.%s icon", name), v, alias)
 		case "command":
 			alias.Command = scalar(v)
+		case "template":
+			alias.Template = scalar(v)
 		case "remember_last":
 			if n, err := strconv.Atoi(v.Value); err == nil {
 				alias.RememberLast = n
@@ -804,6 +815,13 @@ func parseOptions(name string, n *yaml.Node, alias *Alias) {
 			} else {
 				alias.Warnings = append(alias.Warnings, fmt.Sprintf("aliases.%s: vars: expected a map of env var -> group", name))
 			}
+			continue
+		}
+		// Reserved: template (optional text/template that derives extra env
+		// vars from the selected options; the result is a list of NAME=value
+		// lines). It is an alias attribute, not an option group.
+		if key.Value == "template" {
+			alias.Template = scalar(v)
 			continue
 		}
 		// Otherwise: an option group, expected to be a list of single-entry maps.
