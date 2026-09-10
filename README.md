@@ -73,6 +73,35 @@ dist/xuz -f          # open the full-screen picker
 
 Or install: `make install` → `~/.local/bin/xuz`.
 
+## Build
+
+Requires Go ≥ 1.26.
+
+```sh
+make build    # compile for the current host -> dist/xuz
+make test     # build + unit tests + PTY smoke test
+make clean    # remove dist/
+```
+
+### Cross-compilation
+
+Release binaries are pure Go (`CGO_ENABLED=0`), so they cross-compile from any
+host without a target toolchain:
+
+| Target          | Make target   | Output               | Platform                          |
+|-----------------|---------------|----------------------|-----------------------------------|
+| Apple Silicon   | `arm64-darwin`| `dist/xuz-darwin-arm64` | macOS on Apple Silicon (aarch64) |
+| x86-64 Linux    | `x86_64-linux`| `dist/xuz-linux-amd64`  | Linux on Intel/AMD                |
+
+```sh
+make arm64-darwin   # or: make all  (both targets)
+```
+
+Each binary is statically linked, stripped (`-ldflags "-s -w"`), and built with
+`-trimpath` for reproducible output. Copy the file to the target machine and
+run it — no dependencies. To install on the target itself, use `make install`
+there (or `sh install.sh`).
+
 ## How it works
 
 `xuz` reads `~/.xuz/config.yml` (or `$XUZ_CONFIG`, or `--config PATH`). Each
