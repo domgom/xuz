@@ -151,6 +151,12 @@ tag, the `▸` is rendered in the theme's `muted` color instead (a themed
 color, overridable via custom themes, cursor-background aware) to show it is
 your last-run option rather than a default.
 
+The marker glyph itself is configurable: set `needle:` in the config (top
+level, or under `aliases:`) to any single glyph — an emoji, a nerd-font
+symbol, or a multi-cell character. The default is `▸`. The needle is shown in
+the inactive columns; the active column always uses the cursor highlight
+instead, whatever the needle is.
+
 ### History
 
 Every Enter writes one line to `~/.xuz/history`:
@@ -211,6 +217,9 @@ you press `ctrl+s` or answer `y` at the quit prompt.
 theme: default            # default | dracula | gruvbox | monokai | catppuccin
                           # solarized-dark | solarized-light | light, or a name
                           # from themes: below
+# needle: ▸               # selection marker glyph in the inactive columns
+                          # (default ▸); the active column shows the cursor
+                          # highlight instead of the needle
 remember_last: 10         # history depth (default 10)
 
 last_used:                # preselection hints
@@ -279,8 +288,8 @@ Notes:
 
 - Option groups render in the order they appear in the file.
 - `command` may live inside `options:` (as above) or directly under the alias.
-- `theme`, `remember_last`, and `last_used` may also sit directly under
-  `aliases:` (next to the alias names, as in
+- `theme`, `needle`, `remember_last`, and `last_used` may also sit directly
+  under `aliases:` (next to the alias names, as in
   `aliases: { llama: …, last_used: [qwen-3.6-35B-A3B], remember_last: 10 }`);
   they then mean the same as at the top level, and the top level wins when
   both are present.
@@ -324,8 +333,10 @@ Notes:
 - Every column (the alias column and each option column) has a leading icon
   slot, as wide in cells as the widest icon set on that column (color tags
   do not affect the width), and 0 when the column has no icons. Every row is
-  `[slot][▸ / two spaces][name]` (+ ` long_text` when it is shown), so all
-  names/keys in a column start at the same cell.
+  `[slot][needle / blank][name]` (+ ` long_text` when it is shown), so all
+  names/keys in a column start at the same cell. The needle slot is as wide
+  in cells as the `needle` glyph plus a trailing space (at least two), so a
+  multi-cell needle widens the slot and the column accordingly.
 
 ## CLI
 

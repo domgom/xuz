@@ -2643,6 +2643,44 @@ func TestAliasNeedleMutedFromHistory(t *testing.T) {
 	assertRowCellsHighlight(t, m, "cursor row", aliasBoxRow(t, m, "other"), 0)
 }
 
+// TestCustomNeedle guards the configurable needle glyph: a needle: set in the
+// config replaces the default ▸ in the inactive columns (the active column
+// still shows the cursor highlight, never the needle).
+func TestCustomNeedle(t *testing.T) {
+	cfg := cfgFromYAML(t, `
+needle: ★
+aliases:
+  llama:
+    options:
+      model:
+        - qwen-3.8-27B: !default /models/big.gguf
+        - qwen-3.6-35B-A3B: /models/small.gguf
+      context:
+        - 64k: 65536
+        - 256k: 262144
+      command: llama-server -m "$MODEL" -c "$CONTEXT"
+  other:
+    options:
+      model:
+        - m1: v1
+      command: echo other
+`)
+	if cfg.Needle != "★" {
+		t.Fatalf("needle = %q, want ★", cfg.Needle)
+	}
+	m := newModel(t, cfg, "llama")
+	view := m.View()
+
+	// The custom needle renders in the inactive columns: the alias column
+	// (on the selected alias "llama") and the context column (on the
+	// preselected "64k"). The model column is active, so no needle there.
+	mustContain(t, view, "★ llama", "★ 64k")
+	// The default needle is gone.
+	if strings.Contains(view, "▸") {
+		t.Errorf("the default needle must not render with a custom needle:\n%s", view)
+	}
+}
+
 // TestAliasEnterRunsCursor guards Enter in the alias column: it launches the
 // alias under the cursor with its preselected options.
 func TestAliasEnterRunsCursor(t *testing.T) {

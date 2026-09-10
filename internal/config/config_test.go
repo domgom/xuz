@@ -1,6 +1,7 @@
 package config
 
 import (
+	"bytes"
 	"os"
 	"path/filepath"
 	"strings"
@@ -90,6 +91,148 @@ func TestLoadSample(t *testing.T) {
 	}
 	if len(cfg.Warnings) != 0 {
 		t.Errorf("warnings = %v", cfg.Warnings)
+	}
+}
+
+func TestNeedle(t *testing.T) {
+	// Unset: Needle is empty, NeedleGlyph falls back to the default.
+	cfg, err := Load(writeCfg(t, sampleYAML))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Needle != "" {
+		t.Errorf("needle = %q, want empty", cfg.Needle)
+	}
+	if got := cfg.NeedleGlyph(); got != "▸" {
+		t.Errorf("NeedleGlyph = %q, want ▸", got)
+	}
+
+	// Top-level needle is parsed.
+	cfg, err = Load(writeCfg(t, `
+needle: ★
+aliases:
+  a:
+    options:
+      model:
+        - m1: v1
+      command: echo $MODEL
+`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Needle != "★" {
+		t.Errorf("needle = %q, want ★", cfg.Needle)
+	}
+	if got := cfg.NeedleGlyph(); got != "★" {
+		t.Errorf("NeedleGlyph = %q, want ★", got)
+	}
+	if len(cfg.Warnings) != 0 {
+		t.Errorf("warnings = %v", cfg.Warnings)
+	}
+
+	// needle under aliases: is parsed (and is not treated as an alias).
+	cfg, err = Load(writeCfg(t, `
+aliases:
+  needle: ★
+  a:
+    options:
+      model:
+        - m1: v1
+      command: echo $MODEL
+`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Needle != "★" {
+		t.Errorf("needle = %q, want ★", cfg.Needle)
+	}
+	if len(cfg.Aliases) != 1 || cfg.Aliases[0].Name != "a" {
+		t.Errorf("aliases = %+v, want just [a]", cfg.Aliases)
+	}
+	if len(cfg.Warnings) != 0 {
+		t.Errorf("warnings = %v", cfg.Warnings)
+	}
+
+	// Top level wins when both are present.
+	cfg, err = Load(writeCfg(t, `
+needle: ★
+aliases:
+  needle: ●
+  a:
+    options:
+      model:
+        - m1: v1
+      command: echo $MODEL
+`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Needle != "★" {
+		t.Errorf("needle = %q, want ★ (top level wins)", cfg.Needle)
+	}
+	if len(cfg.Aliases) != 1 || cfg.Aliases[0].Name != "a" {
+		t.Errorf("aliases = %+v, want just [a]", cfg.Aliases)
+	}
+}
+
+func TestNeedleRoundTrip(t *testing.T) {
+	dir := t.TempDir()
+	src := filepath.Join(dir, "src.yml")
+	yaml := `
+theme: dracula
+needle: ★
+remember_last: 3
+aliases:
+  llama:
+    options:
+      model:
+        - big: /models/big.gguf
+      command: llama-server -m "$MODEL"
+`
+	if err := os.WriteFile(src, []byte(yaml), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	cfg1, err := Load(src)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg1.Needle != "★" {
+		t.Fatalf("needle = %q, want ★", cfg1.Needle)
+	}
+	noWarnings(t, "source load", cfg1)
+
+	out := filepath.Join(dir, "out.yml")
+	if err := cfg1.Save(out); err != nil {
+		t.Fatal(err)
+	}
+	b1, err := os.ReadFile(out)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// The needle must be written literally (no escapes) and come back.
+	if !bytes.Contains(b1, []byte("needle: ★")) {
+		t.Errorf("saved config lost the needle:\n%s", b1)
+	}
+	cfg2, err := Load(out)
+	if err != nil {
+		t.Fatalf("reload of saved config failed: %v", err)
+	}
+	noWarnings(t, "reload", cfg2)
+	if cfg2.Needle != "★" {
+		t.Errorf("needle after round trip = %q, want ★", cfg2.Needle)
+	}
+	if got := cfg2.NeedleGlyph(); got != "★" {
+		t.Errorf("NeedleGlyph after round trip = %q, want ★", got)
+	}
+
+	// Saving the reloaded config is byte-for-byte deterministic.
+	out2 := filepath.Join(dir, "out2.yml")
+	if err := cfg2.Save(out2); err != nil {
+		t.Fatal(err)
+	}
+	b2, _ := os.ReadFile(out2)
+	if !bytes.Equal(b1, b2) {
+		t.Errorf("save output not deterministic:\n%s\n---\n%s", b1, b2)
 	}
 }
 

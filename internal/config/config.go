@@ -152,12 +152,26 @@ func (a *Alias) ResolveSelections(hints []Hint) map[string]Resolved {
 type Config struct {
 	Path            string
 	Theme           string
+	Needle          string
 	RememberLast    int
 	LastUsed        []string
 	LastUsedByAlias map[string][]string
 	Aliases         []*Alias
 	CustomThemes    map[string]map[string]string
 	Warnings        []string
+}
+
+// defaultNeedle is the selection marker glyph used when the config sets no
+// needle.
+const defaultNeedle = "▸"
+
+// NeedleGlyph returns the selection marker glyph: the configured needle, or
+// the default ▸ when none is set (an empty needle falls back to the default).
+func (c *Config) NeedleGlyph() string {
+	if c.Needle != "" {
+		return c.Needle
+	}
+	return defaultNeedle
 }
 
 // PathOf resolves a --config flag value to a concrete path.
@@ -198,15 +212,18 @@ func Load(path string) (*Config, error) {
 }
 
 // Save writes the configuration back to path as YAML. It emits a canonical
-// layout (theme, remember_last, last_used, themes, aliases) that Load parses
-// back without warnings, preserving alias, group, option and default order.
-// Map keys whose order is not user-visible (vars, custom themes, per-alias
-// last_used) are emitted in sorted order.
+// layout (theme, needle, remember_last, last_used, themes, aliases) that
+// Load parses back without warnings, preserving alias, group, option and
+// default order. Map keys whose order is not user-visible (vars, custom
+// themes, per-alias last_used) are emitted in sorted order.
 func (c *Config) Save(path string) error {
 	var b strings.Builder
 	b.WriteString("# xuz configuration (written by xuz)\n")
 	if c.Theme != "" {
 		b.WriteString("theme: " + yamlScalar(c.Theme) + "\n")
+	}
+	if c.Needle != "" {
+		b.WriteString("needle: " + yamlScalar(c.Needle) + "\n")
 	}
 	b.WriteString("remember_last: " + strconv.Itoa(c.RememberLast) + "\n")
 	if len(c.LastUsed) > 0 {
@@ -503,6 +520,9 @@ func parseRoot(root *yaml.Node) (*Config, error) {
 	if v, ok := findEntry(top, "theme"); ok {
 		cfg.Theme = keyOf(v)
 	}
+	if v, ok := findEntry(top, "needle"); ok {
+		cfg.Needle = keyOf(v)
+	}
 	if v, ok := findEntry(top, "remember_last"); ok {
 		if n, err := strconv.Atoi(v.Value); err == nil {
 			cfg.RememberLast = n
@@ -516,7 +536,7 @@ func parseRoot(root *yaml.Node) (*Config, error) {
 	for _, e := range entries(top) {
 		key, val := e[0], e[1]
 		switch key.Value {
-		case "theme", "remember_last", "last_used":
+		case "theme", "needle", "remember_last", "last_used":
 			// already applied above
 		case "themes":
 			parseThemes(val, cfg)
@@ -634,11 +654,11 @@ func parseAliases(n *yaml.Node, cfg *Config, topKeys map[string]bool) {
 		cfg.Warnings = append(cfg.Warnings, "aliases: expected a map of alias name -> definition")
 		return
 	}
-	// Convenience: theme / remember_last / last_used may also sit directly
-	// inside aliases: (next to the alias names); they then have the same
-	// meaning as at the top level, and the top level wins when both exist.
-	// remember_last is applied before aliases are created so that per-alias
-	// defaults pick it up regardless of document order.
+	// Convenience: theme / needle / remember_last / last_used may also sit
+	// directly inside aliases: (next to the alias names); they then have the
+	// same meaning as at the top level, and the top level wins when both
+	// exist. remember_last is applied before aliases are created so that
+	// per-alias defaults pick it up regardless of document order.
 	if !topKeys["remember_last"] {
 		if v, ok := findEntry(n, "remember_last"); ok {
 			if nn, err := strconv.Atoi(v.Value); err == nil {
@@ -653,6 +673,11 @@ func parseAliases(n *yaml.Node, cfg *Config, topKeys map[string]bool) {
 			cfg.Theme = keyOf(v)
 		}
 	}
+	if !topKeys["needle"] {
+		if v, ok := findEntry(n, "needle"); ok {
+			cfg.Needle = keyOf(v)
+		}
+	}
 	for _, e := range entries(n) {
 		name, val := e[0].Value, e[1]
 		switch name {
@@ -661,7 +686,7 @@ func parseAliases(n *yaml.Node, cfg *Config, topKeys map[string]bool) {
 				cfg.LastUsed, cfg.LastUsedByAlias = parseLastUsed(val)
 			}
 			continue
-		case "remember_last", "theme":
+		case "remember_last", "theme", "needle":
 			continue // handled above
 		}
 		alias := &Alias{

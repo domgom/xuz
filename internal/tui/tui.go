@@ -95,6 +95,8 @@ type model struct {
 	themeIdx     int
 	th           theme.Theme
 	sty          theme.Styles
+	needle       string // selection marker glyph (config needle, default ▸)
+	needleW      int    // needle display width in cells
 	dryRun       bool
 	histPath     string
 	history      []history.Entry
@@ -241,6 +243,8 @@ func New(opts Options) (*model, error) {
 		}
 	}
 	m.sty = theme.BuildStyles(th)
+	m.needle = opts.Cfg.NeedleGlyph()
+	m.needleW = lipgloss.Width(m.needle)
 	return m, nil
 }
 
@@ -1512,6 +1516,24 @@ const (
 	peekColW = 8
 )
 
+// needleSlot is the cells the needle prefix occupies on a row: the glyph plus
+// a trailing space, at least two (the cursor/blank slot when the needle is
+// hidden in the active column).
+func (m *model) needleSlot() int {
+	if s := m.needleW + 1; s > 2 {
+		return s
+	}
+	return 2
+}
+
+// needleBlank is the needle slot as plain spaces, needleSlot() cells wide —
+// the slot when the needle is hidden (the cursor row styles it, the others
+// leave it blank). Keeping it the same width as the needle row keeps every
+// name/key in a column starting at the same cell.
+func (m *model) needleBlank() string {
+	return strings.Repeat(" ", m.needleSlot())
+}
+
 // columnDesired returns the preferred width of column i (0 = alias column)
 // based on its content, clamped to [minColW, maxColW].
 func (m *model) columnDesired(i int) int {
@@ -1519,9 +1541,9 @@ func (m *model) columnDesired(i int) int {
 	var w int
 	if i == 0 {
 		for _, a := range m.aliases {
-			// The alias column's icon slot, the "▸ " needle prefix, a
-			// little margin + the frame.
-			if lw := lipgloss.Width(a.Name) + m.aliasIconW + 8; lw > w {
+			// The alias column's icon slot, the needle prefix, a little
+			// margin + the frame.
+			if lw := lipgloss.Width(a.Name) + m.aliasIconW + m.needleSlot() + 6; lw > w {
 				w = lw
 			}
 		}
@@ -1541,8 +1563,8 @@ func (m *model) columnDesired(i int) int {
 		if maxVal > 24 {
 			maxVal = 24 // long texts are truncated anyway; don't ask for more
 		}
-		// column icon slot + marker + key + " " + (capped) long_text + frame
-		w = g.IconW + 2 + maxKey + 1 + maxVal + 4
+		// column icon slot + needle slot + key + " " + (capped) long_text + frame
+		w = g.IconW + m.needleSlot() + maxKey + 1 + maxVal + 4
 	}
 	return clampInt(w, minColW, maxColW)
 }
@@ -1762,15 +1784,15 @@ func (m *model) aliasLine(i int) string {
 	if !active && i == m.selAlias {
 		muted := m.selAliasSrc == config.SourceHistory
 		if muted {
-			line += m.sty.MarkerMuted.Render("▸")
+			line += m.sty.MarkerMuted.Render(m.needle)
 		} else {
-			line += m.sty.Marker.Render("▸")
+			line += m.sty.Marker.Render(m.needle)
 		}
 		line += " "
 	} else if cursor {
-		line += m.sty.RowCursor.Render("  ")
+		line += m.sty.RowCursor.Render(m.needleBlank())
 	} else {
-		line += "  "
+		line += m.needleBlank()
 	}
 	if cursor {
 		line += m.sty.KeyCursor.Render(a.Name)
@@ -1918,15 +1940,15 @@ func (m *model) pairLine(g *groupState, i, w int, active bool) string {
 	if !active && i == g.Selected {
 		muted := g.Src == config.SourceHistory
 		if muted {
-			line += m.sty.MarkerMuted.Render("▸")
+			line += m.sty.MarkerMuted.Render(m.needle)
 		} else {
-			line += m.sty.Marker.Render("▸")
+			line += m.sty.Marker.Render(m.needle)
 		}
 		line += " "
 	} else if cursor {
-		line += m.sty.RowCursor.Render("  ")
+		line += m.sty.RowCursor.Render(m.needleBlank())
 	} else {
-		line += "  "
+		line += m.needleBlank()
 	}
 	keySt := m.sty.Key
 	if cursor {
