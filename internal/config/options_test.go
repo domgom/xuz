@@ -211,6 +211,48 @@ aliases:
 	}
 }
 
+// TestOptionValueSemantics covers what the command receives per option form:
+// a no-pair option ("- key:" or a bare "- key") passes an empty value (a
+// no-op parameter), while a scalar with a different long text passes that
+// text. The no-pair forms keep LongText = the key text (the column display);
+// only Value() differs.
+func TestOptionValueSemantics(t *testing.T) {
+	yaml := `
+aliases:
+  a:
+    options:
+      g:
+        - dev:
+        - qa:
+        - big: /models/big.gguf
+        - x
+      command: echo $G
+`
+	cfg, err := Load(writeCfg(t, yaml))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(cfg.Warnings) != 0 {
+		t.Errorf("warnings = %v", cfg.Warnings)
+	}
+	a := cfg.Aliases[0]
+	g := a.GroupPairs["g"]
+	if len(g) != 4 {
+		t.Fatalf("g pairs = %+v", g)
+	}
+	wantValue := []string{"", "", "/models/big.gguf", ""}
+	for i, p := range g {
+		if got := p.Value(); got != wantValue[i] {
+			t.Errorf("pair %d (%q) Value() = %q, want %q", i, p.Key, got, wantValue[i])
+		}
+	}
+	// The no-pair forms keep LongText = the key text (the column display),
+	// only Value() differs.
+	if g[0].LongText != "dev" || g[1].LongText != "qa" || g[3].LongText != "x" {
+		t.Errorf("no-pair LongText must stay the key text: %+v", []Pair{g[0], g[1], g[3]})
+	}
+}
+
 // TestSavePairForms covers the save round-trip of every pair form:
 // icon -> object form (long_text omitted when it equals the key, the icon
 // keeps its !color tag); no icon + long_text = key -> bare "- key:";

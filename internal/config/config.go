@@ -41,6 +41,16 @@ type Pair struct {
 	ColorBeforeDefault bool
 }
 
+// Value returns what the command receives when this option is selected:
+// LongText, or "" for a no-pair option (LongText = the key text), so a bare
+// "- key:" passes an empty value instead of the key itself.
+func (p Pair) Value() string {
+	if p.LongText == p.Key {
+		return ""
+	}
+	return p.LongText
+}
+
 // defaultTag is the YAML tag that marks an option as the preselected option
 // of its group: `- qwen-3.6-35B-A3B: !default /path/to/model.gguf` (in the
 // object form the tag rides on the long_text).

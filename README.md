@@ -86,12 +86,15 @@ key itself). The TUI shows:
 
 When you press Enter, the command of the selected alias runs through `sh -c`
 with one environment variable per option group: **the group name,
-uppercased**, set to the **selected option's long text**:
+uppercased**, set to the **selected option's value** — its long text, or an
+empty string for a no-pair option (so a bare `- key:` passes a no-op
+parameter, not the key itself):
 
-| group in config | env var | long text |
+| group in config | env var | value |
 |---|---|---|
 | `model` | `$MODEL` | `/home/models/....gguf` (the long text, not the key) |
 | `context` | `$CONTEXT` | `65536` |
+| `env` (no-pair `- dev:`) | `$ENV` | `` (empty — a no-op parameter) |
 
 So `command: exec llama-server -m "$MODEL" -c "$CONTEXT"` is all you need.
 The command text is passed to the shell **verbatim** — the shell resolves the
@@ -333,6 +336,11 @@ Notes:
   (`- prod: {icon: ⚠, long_text: production}`), or nothing at all
   (`- dev:`): the no-pair form, where the long text is the key text.
   `long_text` may be omitted from the object (then it is the key text).
+  The command receives the option's **value**: its long text, or an empty
+  string when the long text equals the key (the no-pair form) — so a bare
+  `- dev:` passes `$ENV=""` to the command, a no-op parameter you can opt
+  into with `run --env "$ENV"`. A scalar whose value happens to equal the
+  key (`- prod: prod`) behaves the same way.
 - The `!default` tag on an option's long text preselects it (with the default
   `selection_precedence` it wins over the history; see Preselection). In the
   object form the tag rides on the `long_text` entry.

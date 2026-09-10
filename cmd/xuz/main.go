@@ -542,10 +542,10 @@ func resolveAlias(aliasName string, cfg *config.Config) (*config.Alias, map[stri
 	sel := alias.ResolveSelectionsWith(cfg.PrecedenceList(), hints)
 	vars := map[string]string{}
 	for _, g := range alias.Groups {
-		vars[strings.ToUpper(g)] = alias.GroupPairs[g][0].LongText
+		vars[strings.ToUpper(g)] = alias.GroupPairs[g][0].Value()
 		for _, p := range alias.GroupPairs[g] {
 			if p.Key == sel[g].Key {
-				vars[strings.ToUpper(g)] = p.LongText
+				vars[strings.ToUpper(g)] = p.Value()
 			}
 		}
 	}
@@ -553,7 +553,7 @@ func resolveAlias(aliasName string, cfg *config.Config) (*config.Alias, map[stri
 		if g, ok := sel[groupName]; ok {
 			for _, p := range alias.GroupPairs[groupName] {
 				if p.Key == g.Key {
-					vars[varName] = p.LongText
+					vars[varName] = p.Value()
 				}
 			}
 		}
@@ -594,7 +594,7 @@ func doShow(aliasName, pathFlag string) int {
 				pair = p
 			}
 		}
-		fmt.Printf("%s = %s # %s\n", g, pair.Key, pair.LongText)
+		fmt.Printf("%s = %s # %s\n", g, pair.Key, pair.Value())
 	}
 	fmt.Println("$ " + cmdx.ExportPrefix(vars) + alias.Command)
 	return 0

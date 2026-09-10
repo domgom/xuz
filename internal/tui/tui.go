@@ -561,12 +561,12 @@ func (m *model) handleShortGroupKey(msg tea.KeyMsg) {
 }
 
 // selectionStatus is the transient status line after selecting option i of
-// group g: "group: key → long_text" when the long_text is shown next to the
-// key, "group: key" otherwise.
+// group g: "group: key → value" when the long_text is shown next to the
+// key, "group: key" otherwise (including a no-pair option).
 func selectionStatus(g *groupState, i int) string {
 	p := g.Pairs[i]
-	if p.LongText != "" && p.LongText != p.Key {
-		return fmt.Sprintf("%s: %s → %s", g.Name, p.Key, p.LongText)
+	if v := p.Value(); v != "" {
+		return fmt.Sprintf("%s: %s → %s", g.Name, p.Key, v)
 	}
 	return fmt.Sprintf("%s: %s", g.Name, p.Key)
 }
@@ -1132,18 +1132,18 @@ func (m *model) detachedLogPath() string {
 }
 
 // currentVars returns the env vars for alias i's state: one per option
-// group, set to the group's selected (needle) option's long text, plus the
-// alias's extra vars.
+// group, set to the group's selected (needle) option's value (its long text;
+// "" for a no-pair option), plus the alias's extra vars.
 func (m *model) currentVars(i int, st *aliasState) map[string]string {
 	alias := m.cfg.Aliases[i]
 	vars := map[string]string{}
 	for _, g := range st.Groups {
-		vars[strings.ToUpper(g.Name)] = g.Pairs[g.Selected].LongText
+		vars[strings.ToUpper(g.Name)] = g.Pairs[g.Selected].Value()
 	}
 	for varName, groupName := range alias.Vars {
 		for _, g := range st.Groups {
 			if g.Name == groupName {
-				vars[varName] = g.Pairs[g.Selected].LongText
+				vars[varName] = g.Pairs[g.Selected].Value()
 			}
 		}
 	}
@@ -2212,10 +2212,10 @@ func (m *model) commandPreview() string {
 	vars := m.currentVars(m.curAlias, st)
 	if m.curCol > 0 {
 		g := st.Groups[m.curCol-1]
-		vars[strings.ToUpper(g.Name)] = g.Pairs[g.Cursor].LongText
+		vars[strings.ToUpper(g.Name)] = g.Pairs[g.Cursor].Value()
 		for varName, groupName := range alias.Vars {
 			if groupName == g.Name {
-				vars[varName] = g.Pairs[g.Cursor].LongText
+				vars[varName] = g.Pairs[g.Cursor].Value()
 			}
 		}
 	}

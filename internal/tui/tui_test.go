@@ -2863,6 +2863,52 @@ func TestCommandPreviewFollowsCursor(t *testing.T) {
 	}
 }
 
+// TestNoPairOptionPassesEmptyValue guards the no-pair form's value semantics:
+// a bare "- key:" option passes an empty env var (a no-op parameter), not the
+// key text; an explicit different long text still passes that text. The
+// column shows only the key in both cases.
+func TestNoPairOptionPassesEmptyValue(t *testing.T) {
+	cfg := cfgFromYAML(t, `aliases:
+  a:
+    options:
+      env:
+        - dev:
+        - prod: production
+      command: run --env "$ENV"
+`)
+	m := newModel(t, cfg, "a")
+	m.View()
+	// The no-pair option is the first (and preselected) row: the column shows
+	// only the key, and the preview carries an empty ENV assignment.
+	v := ansi.Strip(m.View())
+	if !strings.Contains(v, "ENV=''") {
+		t.Errorf("preview must carry ENV='':\n%s", v)
+	}
+	if strings.Contains(v, "ENV='dev'") {
+		t.Errorf("the no-pair option must not pass the key text:\n%s", v)
+	}
+	mustContain(t, v, "dev", "prod", "run --env \"$ENV\"")
+
+	// Selecting the scalar option passes its long text.
+	send(t, m, downKey) // cursor -> prod
+	if got := ansi.Strip(m.commandPreview()); !strings.Contains(got, "ENV='production'") {
+		t.Errorf("preview = %q, want ENV='production'", got)
+	}
+
+	// Enter runs with the selected value.
+	send(t, m, upKey) // cursor -> dev (the no-pair option)
+	send(t, m, enterKey)
+	if !m.doRun {
+		t.Fatal("enter should run")
+	}
+	if got := m.runVars["ENV"]; got != "" {
+		t.Errorf("ENV = %q, want \"\" (no-pair option)", got)
+	}
+	if m.runCmd != `run --env "$ENV"` {
+		t.Errorf("runCmd = %q", m.runCmd)
+	}
+}
+
 // TestMouseClickAliasSelects guards a left click in the alias column: it
 // moves the cursor there and makes the clicked alias the selected one, like
 // a click in an option column selects the option under the cursor.
