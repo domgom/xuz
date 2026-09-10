@@ -914,3 +914,134 @@ aliases:
 		t.Errorf("bare icon = %q, want empty", got)
 	}
 }
+
+// --- global_variables -------------------------------------------------------
+
+func TestGlobalVariablesRoundTrip(t *testing.T) {
+	p := filepath.Join(t.TempDir(), "config.yml")
+	src := `aliases:
+  tf-plan:
+    options:
+      env:
+        - dev: !default
+        - prod
+      command: terraform plan ${ENV}
+global_variables:
+  ENV: dev
+  REGION: eu-west-1
+  EMPTY: ""
+`
+	if err := os.WriteFile(p, []byte(src), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := Load(p)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if got := cfg.GlobalVariables["ENV"]; got != "dev" {
+		t.Errorf("ENV = %q", got)
+	}
+	if got := cfg.GlobalVariables["REGION"]; got != "eu-west-1" {
+		t.Errorf("REGION = %q", got)
+	}
+	if _, ok := cfg.GlobalVariables["EMPTY"]; !ok {
+		t.Error("EMPTY should be present with an empty value")
+	} else if cfg.GlobalVariables["EMPTY"] != "" {
+		t.Errorf("EMPTY = %q, want empty", cfg.GlobalVariables["EMPTY"])
+	}
+	if err := cfg.Save(p); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+	data, err := os.ReadFile(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(data), "global_variables:") {
+		t.Errorf("saved file missing global_variables:\n%s", data)
+	}
+	reloaded, err := Load(p)
+	if err != nil {
+		t.Fatalf("reload: %v", err)
+	}
+	for k, want := range map[string]string{"ENV": "dev", "REGION": "eu-west-1", "EMPTY": ""} {
+		if got := reloaded.GlobalVariables[k]; got != want {
+			t.Errorf("reloaded %s = %q, want %q", k, got, want)
+		}
+	}
+}
+
+func TestGlobalVariablesEmptyValueRoundTrip(t *testing.T) {
+	p := filepath.Join(t.TempDir(), "config.yml")
+	src := `aliases: {}
+global_variables:
+  EMPTY:
+`
+	if err := os.WriteFile(p, []byte(src), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := Load(p)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if _, ok := cfg.GlobalVariables["EMPTY"]; !ok {
+		t.Error("EMPTY should be present")
+	} else if cfg.GlobalVariables["EMPTY"] != "" {
+		t.Errorf("EMPTY = %q, want empty", cfg.GlobalVariables["EMPTY"])
+	}
+	if err := cfg.Save(p); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+	reloaded, err := Load(p)
+	if err != nil {
+		t.Fatalf("reload: %v", err)
+	}
+	if reloaded.GlobalVariables["EMPTY"] != "" {
+		t.Errorf("reloaded EMPTY = %q, want empty", reloaded.GlobalVariables["EMPTY"])
+	}
+}
+
+func TestGlobalVariablesNotSavedWhenEmpty(t *testing.T) {
+	p := filepath.Join(t.TempDir(), "config.yml")
+	src := `aliases: {}
+`
+	if err := os.WriteFile(p, []byte(src), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := Load(p)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if len(cfg.GlobalVariables) != 0 {
+		t.Errorf("GlobalVariables = %+v, want empty", cfg.GlobalVariables)
+	}
+	if err := cfg.Save(p); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+	data, _ := os.ReadFile(p)
+	if strings.Contains(string(data), "global_variables") {
+		t.Errorf("empty global_variables must not be written:\n%s", data)
+	}
+}
+
+func TestGlobalVariablesMalformedWarns(t *testing.T) {
+	p := filepath.Join(t.TempDir(), "config.yml")
+	src := `aliases: {}
+global_variables: just-a-string
+`
+	if err := os.WriteFile(p, []byte(src), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := Load(p)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	found := false
+	for _, w := range cfg.Warnings {
+		if strings.Contains(w, "global_variables") && strings.Contains(w, "expected a map") {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("expected a global_variables warning, got %v", cfg.Warnings)
+	}
+}

@@ -2,6 +2,7 @@ package tui
 
 import (
 	"encoding/base64"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -3130,5 +3131,674 @@ func TestFullMenuTooltipStyles(t *testing.T) {
 				t.Errorf("%s: legend missing item %q:\n%s", st.name, want, view)
 			}
 		}
+	}
+}
+
+// --- GLOBALS panel (full mode, above COMMAND; "v" focuses it) --------------
+
+func TestGlobalsPanelAlwaysVisibleAboveCommand(t *testing.T) {
+	cfg := cfgFromYAML(t, `aliases:
+  tf-plan:
+    options:
+      env:
+        - dev: !default
+        - prod
+      command: terraform plan ${ENV}
+global_variables:
+  ENV: dev
+`)
+	m := newModel(t, cfg, "tf-plan")
+	view := m.View()
+	// The panel is always present in the footer, above COMMAND.
+	mustContain(t, view, "GLOBALS", "ENV", "dev")
+	if !strings.Contains(view, "COMMAND") {
+		t.Fatal("COMMAND panel should be visible")
+	}
+	if strings.Index(view, "GLOBALS") > strings.Index(view, "COMMAND") {
+		t.Error("the GLOBALS panel should sit above the COMMAND panel")
+	}
+	// Without variables defined, the panel shows a hint row.
+	m2 := newModel(t, cfgFromYAML(t, `aliases:
+  tf-plan:
+    options:
+      env:
+        - dev: !default
+      command: terraform plan ${ENV}
+`), "tf-plan")
+	if !strings.Contains(m2.View(), "(no global variables") {
+		t.Error("empty globals panel should show the hint row")
+	}
+}
+
+func TestVariablesFocusAndLegend(t *testing.T) {
+	cfg := cfgFromYAML(t, `aliases:
+  tf-plan:
+    options:
+      env:
+        - dev: !default
+        - prod
+      command: terraform plan ${ENV}
+global_variables:
+  ENV: dev
+`)
+	m := newModel(t, cfg, "tf-plan")
+	view := m.View()
+	if strings.Contains(ansi.Strip(view), "edit") {
+		t.Fatal("the edit legend should not be visible before v is pressed")
+	}
+	send(t, m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("v")})
+	if m.varsFocus == nil {
+		t.Fatal("varsFocus should be set after v")
+	}
+	view = m.View()
+	mustContain(t, view, "GLOBALS", "ENV", "dev")
+	// The legend switches to the panel's own, in the main menu format.
+	for _, want := range []string{"exit", "edit", "move", "ew", "elete"} {
+		if !strings.Contains(ansi.Strip(view), want) {
+			t.Errorf("legend missing %q", want)
+		}
+	}
+	// The picker's state is preserved underneath.
+	if m.curAlias != 0 || m.curCol != 1 {
+		t.Errorf("picker state changed: curAlias=%d curCol=%d", m.curAlias, m.curCol)
+	}
+}
+
+func TestVariablesStatePreservedOnExit(t *testing.T) {
+	cfg := loadCfg(t)
+	m := newModel(t, cfg, "llama")
+	m.View()
+	send(t, m, tabKey) // into the option column
+	send(t, m, downKey) // move the cursor
+	curColBefore := m.curCol
+	curAliasBefore := m.curAlias
+	selBefore := m.aliases[curAliasBefore].Groups[curColBefore-1].Selected
+
+	send(t, m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("v")})
+	if m.varsFocus == nil {
+		t.Fatal("varsFocus should be set after v")
+	}
+	send(t, m, escKey) // blur without changes
+	if m.varsFocus != nil {
+		t.Fatal("varsFocus should be cleared after esc")
+	}
+	if m.curCol != curColBefore || m.curAlias != curAliasBefore {
+		t.Errorf("picker state lost: col %d->%d alias %d->%d", curColBefore, m.curCol, curAliasBefore, m.curAlias)
+	}
+	if got := m.aliases[curAliasBefore].Groups[curColBefore-1].Selected; got != selBefore {
+		t.Errorf("selection lost: %d -> %d", selBefore, got)
+	}
+}
+
+func TestVariablesNewAndFlush(t *testing.T) {
+	cfg := loadCfg(t) // cfg.Path is set
+	m := newModel(t, cfg, "llama")
+	m.View()
+	send(t, m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("v")})
+	if m.varsFocus == nil {
+		t.Fatal("varsFocus should be set after v")
+	}
+	// No variables yet: n moves to the appended row and edits its key in place.
+	send(t, m, nKey)
+	v := m.varsFocus
+	if !v.Editing || v.Col != varKey || v.Row != 0 {
+		t.Fatalf("n should start editing the key of the new row, got %+v", v)
+	}
+	typeStr(t, m, "ENV")
+	send(t, m, enterKey) // commit the key cell
+	if cfg.GlobalVariables["ENV"] != "" {
+		t.Errorf("after committing the key, GlobalVariables = %+v", cfg.GlobalVariables)
+	}
+	if v.Editing {
+		t.Fatal("editing should be done after committing the key")
+	}
+	// The hover re-lands on the committed row's key; right moves to its value.
+	send(t, m, tea.KeyMsg{Type: tea.KeyRight})
+	if v.Col != varValue {
+		t.Fatalf("right should hover the value cell, got %v", v.Col)
+	}
+	// Edit the value in place and commit it.
+	send(t, m, spaceKey)
+	if !v.Editing || v.Col != varValue {
+		t.Fatal("space should start editing the hovered value cell")
+	}
+	typeStr(t, m, "dev")
+	send(t, m, enterKey) // commit the value cell
+	if cfg.GlobalVariables["ENV"] != "dev" {
+		t.Errorf("GlobalVariables = %+v", cfg.GlobalVariables)
+	}
+	reloaded, err := config.Load(cfg.Path)
+	if err != nil {
+		t.Fatalf("reload: %v", err)
+	}
+	if got := reloaded.GlobalVariables["ENV"]; got != "dev" {
+		t.Errorf("reloaded GlobalVariables[ENV] = %q", got)
+	}
+}
+
+func TestVariablesInvalidKeyRejected(t *testing.T) {
+	cfg := loadCfg(t)
+	m := newModel(t, cfg, "llama")
+	m.View()
+	send(t, m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("v")})
+	send(t, m, nKey)
+	typeStr(t, m, "1BAD")
+	send(t, m, enterKey)
+	if !m.varsFocus.Editing {
+		t.Fatal("invalid key should keep the edit open")
+	}
+	if !strings.Contains(m.varsStatus, "not a valid variable name") {
+		t.Errorf("varsStatus = %q", m.varsStatus)
+	}
+	// Clear the rejected buffer, then type a valid key.
+	n := len(m.varsFocus.Buf)
+	for i := 0; i < n; i++ {
+		send(t, m, tea.KeyMsg{Type: tea.KeyBackspace})
+	}
+	typeStr(t, m, "OK_KEY")
+	send(t, m, enterKey)
+	if m.varsFocus.Editing {
+		t.Fatal("valid key should commit and end the edit")
+	}
+	if _, ok := cfg.GlobalVariables["OK_KEY"]; !ok {
+		t.Errorf("GlobalVariables = %+v", cfg.GlobalVariables)
+	}
+}
+
+func TestVariablesDelete(t *testing.T) {
+	cfg := cfgFromYAML(t, `aliases:
+  tf-plan:
+    options:
+      env:
+        - dev: !default
+      command: terraform plan ${ENV}
+global_variables:
+  ENV: dev
+  REGION: eu-west-1
+`)
+	m := newModel(t, cfg, "tf-plan")
+	m.View()
+	send(t, m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("v")})
+	// Sorted: ENV (row 0), REGION (row 1).
+	if got := cfg.GlobalVariables["REGION"]; got != "eu-west-1" {
+		t.Fatalf("vars = %+v", cfg.GlobalVariables)
+	}
+	send(t, m, dKey)
+	if m.prompt == nil || m.prompt.kind != promptConfirm {
+		t.Fatal("d should open the delete confirm prompt")
+	}
+	if !strings.Contains(m.prompt.label, "ENV") {
+		t.Errorf("label = %q", m.prompt.label)
+	}
+	send(t, m, yKey)
+	if _, ok := cfg.GlobalVariables["ENV"]; ok {
+		t.Error("ENV should be deleted from the config")
+	}
+	if got := cfg.GlobalVariables["REGION"]; got != "eu-west-1" {
+		t.Errorf("REGION should survive, vars = %+v", cfg.GlobalVariables)
+	}
+	reloaded, err := config.Load(cfg.Path)
+	if err != nil {
+		t.Fatalf("reload: %v", err)
+	}
+	if _, ok := reloaded.GlobalVariables["ENV"]; ok {
+		t.Error("ENV should be gone from the saved config")
+	}
+}
+
+func TestVariablesRenameMovesValue(t *testing.T) {
+	cfg := cfgFromYAML(t, `aliases:
+  tf-plan:
+    options:
+      env:
+        - dev: !default vdev
+      command: terraform plan ${ENV}
+global_variables:
+  ENV: dev
+`)
+	m := newModel(t, cfg, "tf-plan")
+	m.View()
+	send(t, m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("v")})
+	// Edit the key of the hovered row in place (ENV -> TARGET).
+	send(t, m, spaceKey)
+	if !m.varsFocus.Editing || m.varsFocus.Col != varKey {
+		t.Fatal("space should start editing the hovered key cell")
+	}
+	// Clear the pre-filled buffer, then type the new name.
+	n := len(m.varsFocus.Buf)
+	for i := 0; i < n; i++ {
+		send(t, m, tea.KeyMsg{Type: tea.KeyBackspace})
+	}
+	typeStr(t, m, "TARGET")
+	send(t, m, enterKey) // commit the key cell (rename carries the value over)
+	if cfg.GlobalVariables["TARGET"] != "dev" {
+		t.Errorf("renamed var should keep its value: %+v", cfg.GlobalVariables)
+	}
+	if _, ok := cfg.GlobalVariables["ENV"]; ok {
+		t.Errorf("old key should be gone: %+v", cfg.GlobalVariables)
+	}
+}
+
+func TestVariablesUpDownStayInColumn(t *testing.T) {
+	cfg := cfgFromYAML(t, `aliases:
+  tf-plan:
+    options:
+      env:
+        - dev: !default
+      command: terraform plan ${ENV}
+global_variables:
+  ALPHA: a
+  BETA: b
+  GAMMA: g
+`)
+	m := newModel(t, cfg, "tf-plan")
+	m.View()
+	send(t, m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("v")})
+	v := m.varsFocus
+	// Hover the value column of row 0.
+	send(t, m, tea.KeyMsg{Type: tea.KeyRight})
+	if v.Col != varValue {
+		t.Fatalf("right should hover the value column, got %v", v.Col)
+	}
+	// Down stays in the value column, moving to the next row.
+	send(t, m, downKey)
+	if v.Row != 1 || v.Col != varValue {
+		t.Fatalf("down should stay in the hovered column: row=%d col=%v", v.Row, v.Col)
+	}
+	// Up comes back.
+	send(t, m, upKey)
+	if v.Row != 0 || v.Col != varValue {
+		t.Fatalf("up should stay in the hovered column: row=%d col=%v", v.Row, v.Col)
+	}
+	// Left switches to the key column of the same row.
+	send(t, m, tea.KeyMsg{Type: tea.KeyLeft})
+	if v.Row != 0 || v.Col != varKey {
+		t.Fatalf("left should hover the key column: row=%d col=%v", v.Row, v.Col)
+	}
+}
+
+func TestVariablesEscDoesNotQuitApp(t *testing.T) {
+	cfg := loadCfg(t)
+	m := newModel(t, cfg, "llama")
+	m.View()
+	send(t, m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("v")})
+	send(t, m, escKey)
+	if m.doQuit {
+		t.Fatal("esc in the globals panel must not quit the app")
+	}
+	if m.varsFocus != nil {
+		t.Fatal("focus should be cleared")
+	}
+}
+
+func TestGlobalsPanelScrollsBeyondMaxRows(t *testing.T) {
+	cfg := cfgFromYAML(t, `aliases:
+  tf-plan:
+    options:
+      env:
+        - dev: !default
+      command: terraform plan ${ENV}
+global_variables:
+  A1: v1
+  A2: v2
+  A3: v3
+  A4: v4
+  A5: v5
+  A6: v6
+  A7: v7
+  A8: v8
+`)
+	m := newModel(t, cfg, "tf-plan")
+	view := m.View()
+	// Only globalsPanelMaxRows variable rows are rendered; the rest scroll.
+	for i := 0; i < globalsPanelMaxRows; i++ {
+		if !strings.Contains(view, fmt.Sprintf("A%d", i+1)) {
+			t.Errorf("panel should show A%d (unfocused)", i+1)
+		}
+	}
+	if strings.Contains(view, "A7") || strings.Contains(view, "A8") {
+		t.Error("the panel must not show more than globalsPanelMaxRows rows unfocused")
+	}
+	// Focused: move to the last row; it scrolls into view.
+	send(t, m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("v")})
+	for i := 0; i < 7; i++ {
+		send(t, m, downKey)
+	}
+	if m.varsFocus.Row != 7 {
+		t.Fatalf("row = %d, want 7", m.varsFocus.Row)
+	}
+	view = m.View()
+	if !strings.Contains(view, "A8") {
+		t.Error("the hovered last row (A8) should be scrolled into view")
+	}
+	if strings.Contains(view, "A1") {
+		t.Error("A1 should have scrolled out of view")
+	}
+}
+
+func TestGlobalsPanelInPlaceEditVisible(t *testing.T) {
+	cfg := cfgFromYAML(t, `aliases:
+  tf-plan:
+    options:
+      env:
+        - dev: !default
+      command: terraform plan ${ENV}
+global_variables:
+  ENV: dev
+`)
+	m := newModel(t, cfg, "tf-plan")
+	m.View()
+	send(t, m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("v")})
+	send(t, m, spaceKey) // edit the hovered key cell in place
+	typeStr(t, m, "X")
+	view := ansi.Strip(m.View())
+	// The buffer renders on the key cell itself (ENV + X█), not on a separate line.
+	if !strings.Contains(view, "ENVX█") {
+		t.Errorf("the in-place edit should render on the cell:\n%s", view)
+	}
+}
+
+// --- Global variables in the command env -----------------------------------
+
+func TestGlobalVarsExposedWhenReferenced(t *testing.T) {
+	cfg := cfgFromYAML(t, `aliases:
+  tf-plan:
+    options:
+      env:
+        - dev: !default vdev
+        - prod: vprod
+      command: terraform plan ${ENV}
+global_variables:
+  ENV: global-dev
+  REGION: eu-west-1
+`)
+	m := newModel(t, cfg, "tf-plan")
+	m.View()
+	vars := m.currentVars(0, m.aliases[0])
+	// The env column (uppercased) overrides the same-named global variable.
+	if vars["ENV"] != "vdev" {
+		t.Errorf("column value should win over the global, got %q", vars["ENV"])
+	}
+	if _, ok := vars["REGION"]; ok {
+		t.Errorf("unreferenced global REGION must not be exposed, vars = %+v", vars)
+	}
+	// The preview prefix carries the column value, not the global.
+	mustContain(t, m.commandPreview(), "ENV='vdev'", "terraform plan ${ENV}")
+	if strings.Contains(m.commandPreview(), "REGION") {
+		t.Errorf("preview should not mention REGION: %s", m.commandPreview())
+	}
+}
+
+func TestGlobalVarsColumnPrecedence(t *testing.T) {
+	cfg := cfgFromYAML(t, `aliases:
+  tf-plan:
+    options:
+      env:
+        - dev: !default vdev
+        - prod: vprod
+      command: terraform plan ${ENV}
+global_variables:
+  ENV: global-dev
+`)
+	m := newModel(t, cfg, "tf-plan")
+	m.View()
+	// The env column (uppercased) overrides the same-named global variable.
+	vars := m.currentVars(0, m.aliases[0])
+	if vars["ENV"] != "vdev" {
+		t.Errorf("column value should win over the global, got %q", vars["ENV"])
+	}
+	// The column's cursor (prod) wins in the preview too.
+	send(t, m, downKey)
+	if !strings.Contains(m.commandPreview(), "ENV='vprod'") {
+		t.Errorf("preview = %s", m.commandPreview())
+	}
+}
+
+func TestGlobalVarsLiteralNameReference(t *testing.T) {
+	cfg := cfgFromYAML(t, `aliases:
+  tf-plan:
+    options:
+      env:
+        - dev: !default vdev
+      command: terraform plan -var "env=${ENV:-null}"
+global_variables:
+  ENV: global-dev
+`)
+	m := newModel(t, cfg, "tf-plan")
+	m.View()
+	vars := m.currentVars(0, m.aliases[0])
+	// The column overrides the global; the literal name in the sophisticated
+	// form still triggers the exposure (the column wins).
+	if vars["ENV"] != "vdev" {
+		t.Errorf("column value should win over the global, vars = %+v", vars)
+	}
+}
+
+func TestGlobalVarsExposedWithoutColumnConflict(t *testing.T) {
+	cfg := cfgFromYAML(t, `aliases:
+  tf-plan:
+    options:
+      env:
+        - dev: !default vdev
+      command: terraform plan ${ENV} --region ${REGION}
+global_variables:
+  REGION: eu-west-1
+`)
+	m := newModel(t, cfg, "tf-plan")
+	m.View()
+	vars := m.currentVars(0, m.aliases[0])
+	// No column named REGION, so the global is exposed as-is.
+	if vars["REGION"] != "eu-west-1" {
+		t.Errorf("global REGION should be exposed, vars = %+v", vars)
+	}
+	mustContain(t, m.commandPreview(), "REGION='eu-west-1'", "ENV='vdev'")
+}
+
+func TestGlobalVarsTemplateReference(t *testing.T) {
+	cfg := cfgFromYAML(t, `aliases:
+  app:
+    options:
+      model:
+        - m1: v1
+      command: run $APP
+      template: |
+        APP={{.MODEL}}-{{.REGION}}
+global_variables:
+  REGION: eu-west-1
+`)
+	m := newModel(t, cfg, "app")
+	m.View()
+	vars := m.fullVars(0, m.aliases[0])
+	if vars["REGION"] != "eu-west-1" {
+		t.Errorf("template-referenced global should be exposed, vars = %+v", vars)
+	}
+	if vars["APP"] != "v1-eu-west-1" {
+		t.Errorf("derived APP = %q", vars["APP"])
+	}
+}
+
+func TestDryRunIncludesReferencedGlobals(t *testing.T) {
+	cfg := cfgFromYAML(t, `aliases:
+  tf-plan:
+    options:
+      env:
+        - dev: !default vdev
+      command: terraform plan ${ENV}
+global_variables:
+  ENV: global-dev
+`)
+	m := newModel(t, cfg, "tf-plan")
+	m.dryRun = true
+	m.View()
+	send(t, m, enterKey)
+	if !m.doQuit {
+		t.Fatal("enter should quit in dry-run mode")
+	}
+	// The column value (vdev) wins over the global (global-dev).
+	if !strings.Contains(m.dryCmd, "ENV='vdev' terraform plan ${ENV}") {
+		t.Errorf("dryCmd = %q", m.dryCmd)
+	}
+}
+
+
+// TestGlobalsPanelLineWidths guards against the overlay-compositing class of
+// bug: every rendered line — with or without the GLOBALS panel focused — must
+// be exactly the terminal width, whatever the size. Sliced ANSI sequences
+// (a border offset by stray spaces, a leaked color code) show up here as a
+// width mismatch.
+func TestGlobalsPanelLineWidths(t *testing.T) {
+	cfg := cfgFromYAML(t, `aliases:
+  tf-plan:
+    options:
+      env:
+        - dev: !default
+        - prod
+      command: terraform plan ${ENV}
+global_variables:
+  ENV: dev
+  REGION: eu-west-1
+`)
+	for _, w := range []int{60, 80, 100, 120} {
+		m, err := New(Options{Cfg: cfg, StartAlias: "tf-plan"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		send(t, m, tea.WindowSizeMsg{Width: w, Height: 24})
+		check := func(view string, ctx string) {
+			for i, l := range strings.Split(view, "\n") {
+				if dw := lipgloss.Width(l); dw != w {
+					t.Errorf("%s w=%d line %d has width %d: %.60q", ctx, w, i, dw, l)
+				}
+			}
+		}
+		check(m.View(), "plain")
+		m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("v")}) // focus the panel
+		check(m.View(), "focused")
+		send(t, m, nKey) // editing a new variable (input line inside the box)
+		typeStr(t, m, "FOO")
+		check(m.View(), "editing")
+	}
+}
+
+// TestGlobalsSaveMessageSingleInstance guards the double-message bug: after a
+// change flushes to the config file, "variables saved to ..." must appear
+// exactly once — in the GLOBALS panel's bottom line, never also in the footer
+// status line above the panel.
+func TestGlobalsSaveMessageSingleInstance(t *testing.T) {
+	cfg := loadCfg(t)
+	m := newModel(t, cfg, "llama")
+	m.View()
+	send(t, m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("v")})
+	send(t, m, nKey)
+	typeStr(t, m, "ENV")
+	send(t, m, enterKey) // commit the key cell -> flush
+	view := ansi.Strip(m.View())
+	count := strings.Count(view, "variables saved to")
+	if count != 1 {
+		t.Errorf("the save message should appear exactly once, got %d:\n%s", count, view)
+	}
+	// The footer status line (above the panel) must be empty.
+	if m.status != "" {
+		t.Errorf("footer status should be empty, got %q", m.status)
+	}
+}
+
+// TestGlobalsHoverHighlightsCellOnly guards the whole-line highlight bug:
+// hovering a cell paints that cell's span with the row background — not the
+// rest of the line. The plain (non-cursor) cells keep the default background.
+func TestGlobalsHoverHighlightsCellOnly(t *testing.T) {
+	prev := lipgloss.ColorProfile()
+	lipgloss.SetColorProfile(termenv.TrueColor) // force color so the highlight SGRs are emitted
+	defer lipgloss.SetColorProfile(prev)
+	cfg := cfgFromYAML(t, `aliases:
+  tf-plan:
+    options:
+      env:
+        - dev: !default
+      command: terraform plan ${ENV}
+global_variables:
+  ENV: dev
+`)
+	m := newModel(t, cfg, "tf-plan")
+	m.View()
+	send(t, m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("v")}) // hover row 0 key cell
+	panel := strings.Join(m.globalsPanelLines(), "\n")
+	// The line must contain the row-cursor background (the hovered key span)
+	// but must NOT end with a cursor-background run covering the value column:
+	// after the last non-border character of the value cell, only plain spaces
+	// may follow. Find the row line and check its tail is unstyled.
+	for _, l := range strings.Split(panel, "\n") {
+		if !strings.Contains(l, "ENV") {
+			continue
+		}
+		// The row-cursor style wraps the whole hovered key cell (text + its
+		// padding). Detect its background SGR directly: lipgloss emits
+		// "\x1b[<fg>;<bg>m" and the reset may be "0m" or "m", so match on the
+		// 48;2;r;g;b part only.
+		bgHex := strings.TrimPrefix(string(theme.NormalizeColor(m.th.CursorBg)), "#")
+		r, _ := strconv.ParseUint(bgHex[0:2], 16, 8)
+		g, _ := strconv.ParseUint(bgHex[2:4], 16, 8)
+		b2, _ := strconv.ParseUint(bgHex[4:6], 16, 8)
+		cursorBgSGR := fmt.Sprintf(";48;2;%d;%d;%d", r, g, b2)
+		if !strings.Contains(l, cursorBgSGR) {
+			t.Fatalf("hovered key cell should carry the cursor background:\n%s", l)
+		}
+		// After the value text "dev" (up to the right border + padding) no
+		// cursor-background span may follow: a whole-line highlight would put
+		// one there.
+		idx := strings.LastIndex(l, "dev")
+		if idx < 0 {
+			t.Fatalf("row missing the value text:\n%s", l)
+		}
+		tail := l[idx+3:]
+		if strings.Contains(tail, cursorBgSGR) {
+			t.Errorf("the value column's padding carries the cursor background (whole-line highlight):\n%s", l)
+		}
+		break
+	}
+}
+
+// TestMouseClickSelectsGlobalsPanel guards that a left click inside the
+// GLOBALS panel focuses it and hovers the clicked row/cell: the left half of
+// a row is its key cell, the right half its value column. Clicking while the
+// panel already has focus steers the hover directly (clicks are not swallowed
+// then). A click on the panel's border only focuses it.
+func TestMouseClickSelectsGlobalsPanel(t *testing.T) {
+	cfg := cfgFromYAML(t, `aliases:
+  tf-plan:
+    options:
+      env:
+        - dev: !default
+      command: terraform plan ${ENV}
+global_variables:
+  ALPHA: a
+  BETA: b
+`)
+	m := newModel(t, cfg, "tf-plan")
+	m.View()
+	if m.globalsRect.h == 0 {
+		t.Fatal("the globals panel rect should be recorded in View")
+	}
+	r := m.globalsRect
+	// Click the key cell of the second row (BETA).
+	mouseClick(t, m, r.x+2, r.y+1+1)
+	if m.varsFocus == nil {
+		t.Fatal("a click inside the globals panel should focus it")
+	}
+	if m.varsFocus.Row != 1 || m.varsFocus.Col != varKey {
+		t.Errorf("after key click: row=%d col=%v, want 1/key", m.varsFocus.Row, m.varsFocus.Col)
+	}
+	// Click the value cell of the first row (ALPHA) — the panel already has
+	// focus, so the hover must move there directly.
+	innerW := r.w - 4
+	keyW := innerW / 2
+	mouseClick(t, m, r.x+2+keyW+1, r.y+1+0)
+	if m.varsFocus.Row != 0 || m.varsFocus.Col != varValue {
+		t.Errorf("after value click: row=%d col=%v, want 0/value", m.varsFocus.Row, m.varsFocus.Col)
+	}
+	// Click the panel's top border: only focus (hover untouched).
+	mouseClick(t, m, r.x+2, r.y)
+	if m.varsFocus.Row != 0 || m.varsFocus.Col != varValue {
+		t.Errorf("after border click: row=%d col=%v, want hover kept at 0/value", m.varsFocus.Row, m.varsFocus.Col)
 	}
 }

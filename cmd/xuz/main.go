@@ -159,6 +159,10 @@ keys (full mode):
   space            select the item under the cursor in the current column
   enter            run the command (works from any column)
   f                filter the options in the current column (esc exits)
+  v                focus the GLOBALS panel (above COMMAND): edit the global
+                   variables (shared by all aliases); exposed to a command's
+                   env when the command references them; every change is
+                   saved immediately; esc returns to the columns
   n                add a new option value to the current column
   d                delete the option under the cursor
   ctrl+space       make the option under the cursor the default
@@ -540,7 +544,21 @@ func resolveAlias(aliasName string, cfg *config.Config) (*config.Alias, map[stri
 		}
 	}
 	sel := alias.ResolveSelectionsWith(cfg.PrecedenceList(), hints)
+	// Global variables referenced by the command (lowest precedence: a values
+	// column named identically to one overrides it, silently).
 	vars := map[string]string{}
+	if len(cfg.GlobalVariables) > 0 {
+		names := make([]string, 0, len(cfg.GlobalVariables))
+		for k := range cfg.GlobalVariables {
+			names = append(names, k)
+		}
+		ref := cmdx.ReferencedNames(alias.Command, names)
+		for k, v := range cfg.GlobalVariables {
+			if ref[k] {
+				vars[k] = v
+			}
+		}
+	}
 	for _, g := range alias.Groups {
 		vars[strings.ToUpper(g)] = alias.GroupPairs[g][0].Value()
 		for _, p := range alias.GroupPairs[g] {

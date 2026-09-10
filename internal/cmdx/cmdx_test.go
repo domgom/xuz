@@ -164,3 +164,34 @@ func TestTemplateFuncsPure(t *testing.T) {
 		t.Error("join func missing or wrong")
 	}
 }
+
+func TestReferencedNamesLiteral(t *testing.T) {
+	cmd := `terraform plan -var "env=${ENV:-null}" --region $REGION`
+	got := ReferencedNames(cmd, []string{"ENV", "REGION", "OTHER"})
+	if !got["ENV"] || !got["REGION"] {
+		t.Errorf("got = %+v, want ENV and REGION referenced", got)
+	}
+	if got["OTHER"] {
+		t.Errorf("OTHER must not be referenced: %+v", got)
+	}
+}
+
+func TestReferencedNamesNoMatch(t *testing.T) {
+	got := ReferencedNames(`echo hello`, []string{"ENV"})
+	if len(got) != 0 {
+		t.Errorf("got = %+v, want empty", got)
+	}
+}
+
+func TestIsValidVarName(t *testing.T) {
+	for _, s := range []string{"ENV", "A1_B2"} {
+		if !IsValidVarName(s) {
+			t.Errorf("%q should be valid", s)
+		}
+	}
+	for _, s := range []string{"", "1A", "A-B", "A B", "A.B"} {
+		if IsValidVarName(s) {
+			t.Errorf("%q should be invalid", s)
+		}
+	}
+}

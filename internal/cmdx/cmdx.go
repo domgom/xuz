@@ -42,6 +42,22 @@ func Refs(command string) []Ref {
 	return out
 }
 
+// ReferencedNames reports which of the given variable names occur in command
+// as a literal substring. It deliberately matches the bare name instead of a
+// $VAR / ${VAR} reference: commands may use sophisticated shell forms
+// (${NAME:-null}, ${!NAME}, indirect expansion, …) that no $-reference regex
+// would match, and an unquoted occurrence still resolves against the
+// environment. Names not in command are dropped.
+func ReferencedNames(command string, names []string) map[string]bool {
+	out := map[string]bool{}
+	for _, n := range names {
+		if n != "" && strings.Contains(command, n) {
+			out[n] = true
+		}
+	}
+	return out
+}
+
 // ShellQuote returns s quoted as a POSIX shell word: single-quoted with any
 // embedded single quote escaped as '\''. The result is safe to place anywhere
 // a shell word is expected (an assignment value, an argument, …).
@@ -188,6 +204,12 @@ func ParseDerivedVars(s string) (map[string]string, error) {
 		out[name] = line[eq+1:]
 	}
 	return out, nil
+}
+
+// IsValidVarName reports whether s is a valid shell variable name: it starts
+// with a letter or underscore, then letters, digits, or underscores.
+func IsValidVarName(s string) bool {
+	return isValidVarName(s)
 }
 
 // isValidVarName reports whether s is a valid shell variable name: it starts

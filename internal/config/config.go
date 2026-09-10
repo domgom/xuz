@@ -248,7 +248,13 @@ type Config struct {
 	SelectionPrecedence []string // selection_precedence levels, in priority order
 	Aliases             []*Alias
 	CustomThemes        map[string]map[string]string
-	Warnings            []string
+	// GlobalVariables are the global variables (name -> value) shared by all
+	// aliases and column values. They are exposed to a command's environment
+	// when the command references them, and they sit at the bottom of the
+	// precedence order: a values column named identically to a global
+	// variable takes precedence over it.
+	GlobalVariables map[string]string
+	Warnings        []string
 }
 
 // defaultNeedle is the selection marker glyph used when the config sets no
@@ -303,9 +309,10 @@ func Load(path string) (*Config, error) {
 
 // Save writes the configuration back to path as YAML. It emits a canonical
 // layout (theme, needle, remember_last, selection_precedence, themes,
-// aliases) that Load parses back without warnings, preserving alias, group,
-// option and default order. Map keys whose order is not user-visible (vars,
-// custom themes) are emitted in sorted order.
+// global_variables, aliases) that Load parses back without warnings,
+// preserving alias, group, option and default order. Map keys whose order is
+// not user-visible (vars, custom themes, global variables) are emitted in
+// sorted order.
 func (c *Config) Save(path string) error {
 	var b strings.Builder
 	b.WriteString("# xuz configuration (written by xuz)\n")
@@ -316,6 +323,12 @@ func (c *Config) Save(path string) error {
 		b.WriteString("needle: " + yamlScalar(c.Needle) + "\n")
 	}
 	b.WriteString("remember_last: " + strconv.Itoa(c.RememberLast) + "\n")
+	if len(c.GlobalVariables) > 0 {
+		b.WriteString("global_variables:\n")
+		for _, k := range sortedKeys(c.GlobalVariables) {
+			b.WriteString("  " + yamlScalar(k) + ": " + yamlScalar(c.GlobalVariables[k]) + "\n")
+		}
+	}
 	if len(c.SelectionPrecedence) > 0 {
 		b.WriteString("selection_precedence:\n")
 		for _, s := range c.SelectionPrecedence {
@@ -577,8 +590,9 @@ func yamlRoot(data []byte) (*yaml.Node, error) {
 
 func parseRoot(root *yaml.Node) (*Config, error) {
 	cfg := &Config{
-		RememberLast: 10,
-		CustomThemes: map[string]map[string]string{},
+		RememberLast:    10,
+		CustomThemes:    map[string]map[string]string{},
+		GlobalVariables: map[string]string{},
 	}
 	var top *yaml.Node
 	if root.Kind == yaml.DocumentNode {
@@ -623,6 +637,8 @@ func parseRoot(root *yaml.Node) (*Config, error) {
 			// already applied above
 		case "themes":
 			parseThemes(val, cfg)
+		case "global_variables":
+			parseGlobalVariables(val, cfg)
 		case "aliases":
 			parseAliases(val, cfg, topKeys)
 		default:
@@ -741,6 +757,24 @@ func parseThemes(n *yaml.Node, cfg *Config) {
 			fields[strings.ToLower(fe[0].Value)] = fe[1].Value
 		}
 		cfg.CustomThemes[name] = fields
+	}
+}
+
+// parseGlobalVariables parses the global_variables value: a map of variable
+// name -> value. A non-mapping value is warned about and ignored; each value
+// is taken as its scalar text (an empty mapping entry gives "").
+func parseGlobalVariables(n *yaml.Node, cfg *Config) {
+	if n.Kind != yaml.MappingNode {
+		cfg.Warnings = append(cfg.Warnings, "global_variables: expected a map of variable name -> value")
+		return
+	}
+	for _, e := range entries(n) {
+		name := e[0].Value
+		var val string
+		if e[1].Kind == yaml.ScalarNode {
+			val = e[1].Value
+		}
+		cfg.GlobalVariables[name] = val
 	}
 }
 

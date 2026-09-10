@@ -83,6 +83,26 @@ type prompt struct {
 	action promptAction
 }
 
+// variablesState holds the state of the GLOBALS panel focus (entered with "v"
+// in the full mode): the hovered row and column (key or value), whether an
+// in-place edit is active on that cell, and the edit buffer. The panel edits
+// the config's global variables directly; every change is flushed to the
+// config file immediately.
+type variablesState struct {
+	Row     int // hovered row index (into the sorted variable names)
+	Col     varCell // hovered column: the key or the value of the row
+	Editing bool  // an in-place edit is active on the hovered cell
+	Buf     []rune // the edit buffer of the hovered cell
+}
+
+// varCell selects which column of a GLOBALS panel row is hovered/edited.
+type varCell int
+
+const (
+	varKey varCell = iota
+	varValue
+)
+
 type model struct {
 	cfg          *config.Config
 	aliases      []*aliasState
@@ -124,6 +144,9 @@ type model struct {
 	short        bool // compact inline mode (alias search + one option column at a time)
 	modeSwitch   bool // "/" was pressed: the Run loop restarts in the other mode
 	aliasIconW   int  // alias column icon slot: the widest alias icon in cells (0 when none)
+	varsFocus    *variablesState // the GLOBALS panel focus state (nil = the columns have focus)
+	varsStatus   string          // transient message shown in the GLOBALS panel's bottom line only (never in the footer status line)
+	globalsRect  rect            // where the GLOBALS panel was drawn in the last View (for mouse clicks)
 }
 
 // colLayout records where one column was rendered in the last View so mouse
@@ -134,6 +157,15 @@ type colLayout struct {
 	contentLines int   // number of content rows inside the box
 	top          int   // scroll offset of the content window
 	items        []int // item indices in content order (alias idx or pair idx)
+}
+
+// rect is a screen rectangle (in cells, origin top-left, border included).
+type rect struct {
+	x, y, w, h int
+}
+
+func (r rect) contains(x, y int) bool {
+	return x >= r.x && x < r.x+r.w && y >= r.y && y < r.y+r.h
 }
 
 // currentGroup returns the option group under the cursor, or nil in the
@@ -271,8 +303,11 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 // pointer. Clicking a column focuses it; clicking a row in the alias column
 // moves the alias cursor, and clicking an option row selects that option
 // (same as pressing space). Clicks on a column's border, title bar or padding
-// only focus the column. It is a no-op while a prompt is open or during a
-// search, where the keyboard keeps the meaning of every key.
+// only focus the column. A click inside the GLOBALS panel focuses it and
+// hovers the clicked row/cell (the left half is the key column, the right
+// half the value column) — including while it already has the focus, so the
+// mouse can steer the hover directly. It is a no-op while a prompt is open or
+// during a search, where the keyboard keeps the meaning of every key.
 func (m *model) handleMouse(msg tea.MouseMsg) {
 	if m.short {
 		return
@@ -281,6 +316,10 @@ func (m *model) handleMouse(msg tea.MouseMsg) {
 		return
 	}
 	if m.prompt != nil || m.search {
+		return
+	}
+	if m.globalsRect.contains(msg.X, msg.Y) {
+		m.mouseGlobalsCell(msg)
 		return
 	}
 	for i, cl := range m.layout {
@@ -316,9 +355,54 @@ func (m *model) handleMouse(msg tea.MouseMsg) {
 	}
 }
 
+// mouseGlobalsCell handles a left click inside the GLOBALS panel: it gives
+// the panel the keyboard focus and hovers the clicked row/cell — the left
+// half of a row is its key cell, the right half its value cell (the same
+// split the panel renders with). Clicking a border or the bottom status line
+// only focuses the panel. The hover lands on the appended empty row when the
+// click falls past the last variable, so "n" can be reached by mouse too.
+func (m *model) mouseGlobalsCell(msg tea.MouseMsg) {
+	r := m.globalsRect
+	row := msg.Y - (r.y + 1) // content rows start below the top border
+	if m.varsFocus == nil {
+		m.varsFocus = &variablesState{}
+	}
+	v := m.varsFocus
+	keys := m.varsKeys()
+	nrows := len(keys)
+	if row < 0 || row >= globalsPanelMaxRows+1 || msg.X < r.x+2 || msg.X >= r.x+r.w-2 {
+		// Border, title or bottom line: only focus the panel.
+		v.Editing = false
+		m.varsStatus = ""
+		return
+	}
+	innerW := r.w - 4
+	keyW := innerW / 2
+	if row >= nrows {
+		// Past the last variable (or no variables): hover the appended empty
+		// row's key cell.
+		v.Row = nrows
+		v.Col = varKey
+		v.Editing = false
+		return
+	}
+	v.Row = row
+	if msg.X-r.x-2 < keyW {
+		v.Col = varKey
+	} else {
+		v.Col = varValue
+	}
+	v.Editing = false
+	m.varsStatus = ""
+}
+
 func (m *model) handleKey(msg tea.KeyMsg) {
 	if m.prompt != nil {
 		m.handlePromptKey(msg)
+		return
+	}
+	if m.varsFocus != nil {
+		m.handleVarsKey(msg)
 		return
 	}
 	if msg.String() == "/" {
@@ -387,6 +471,8 @@ func (m *model) handleKey(msg tea.KeyMsg) {
 		m.toggleBackground()
 	case "f":
 		m.startSearch()
+	case "v":
+		m.focusVariables()
 	case "ctrl+s":
 		m.saveNow()
 	case "ctrl+@": // ctrl+space is reported as null char (String() == "ctrl+@")
@@ -975,10 +1061,272 @@ func (m *model) resolvePrompt(yes bool) {
 	}
 	switch p.action {
 	case actDeletePair:
-		m.doDeletePair()
+		if m.varsFocus != nil {
+			m.varsDeletePrompt()
+		} else {
+			m.doDeletePair()
+		}
 	case actSaveOnQuit:
 		m.saveThenQuit()
 	}
+}
+
+// globalsPanelMaxRows is the maximum number of variable rows the GLOBALS
+// panel shows: beyond that the panel scrolls (the hovered row is kept in
+// view), so the footer — and with it the COMMAND panel below — stays a
+// bounded size no matter how many variables are defined.
+const globalsPanelMaxRows = 6
+
+// focusVariables moves the keyboard focus to the GLOBALS panel ("v"): the
+// hover starts on the first row's key cell (or the appended empty row when
+// no variables are defined yet). The panel's contents are the config's
+// global variables, edited in place; every change is flushed to the config
+// file immediately (varsSaveNow).
+func (m *model) focusVariables() {
+	if m.varsFocus == nil {
+		m.varsFocus = &variablesState{}
+	}
+	m.varsStatus = ""
+}
+
+// blurVariables returns the keyboard focus from the GLOBALS panel to the
+// columns: all picker state was untouched while the panel had focus.
+func (m *model) blurVariables() {
+	if m.varsFocus == nil {
+		return
+	}
+	m.varsFocus = nil
+	m.varsStatus = ""
+}
+
+// varsKeys returns the global variable names in the GLOBALS panel's display
+// order (sorted).
+func (m *model) varsKeys() []string {
+	keys := make([]string, 0, len(m.cfg.GlobalVariables))
+	for k := range m.cfg.GlobalVariables {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	return keys
+}
+
+// varsRowKey returns the variable name of row i ("" past the end).
+func (m *model) varsRowKey(i int) string {
+	keys := m.varsKeys()
+	if i < 0 || i >= len(keys) {
+		return ""
+	}
+	return keys[i]
+}
+
+// varsHoveredCellText returns the text of the cell currently hovered (the row's
+// key or value, or the edit buffer while an in-place edit is active).
+func (m *model) varsHoveredCellText() string {
+	v := m.varsFocus
+	if v.Editing {
+		return string(v.Buf)
+	}
+	key := m.varsRowKey(v.Row)
+	if key == "" {
+		return ""
+	}
+	if v.Col == varKey {
+		return key
+	}
+	return m.cfg.GlobalVariables[key]
+}
+
+// varsSaveNow writes the config's global variables to the config file
+// immediately (so they persist even if xuz never hits its normal save flow).
+// The write failure path keeps the existing semantics: the config stays dirty
+// and the user is offered a retry prompt on quit, as after any failed save.
+func (m *model) varsSaveNow() {
+	cfg := m.cfg
+	if cfg.Path == "" {
+		m.varsStatus = "no config path to save to"
+		return
+	}
+	if err := cfg.Save(cfg.Path); err != nil {
+		m.dirty = true
+		m.prompt = &prompt{
+			kind:   promptConfirm,
+			label:  "save failed: " + err.Error() + " — retry? (y/n)",
+			action: actSaveOnQuit,
+		}
+		return
+	}
+	m.dirty = false
+	m.varsStatus = fmt.Sprintf("variables saved to %s", cfg.Path)
+}
+
+// handleVarsKey routes one key while the GLOBALS panel has focus. The hover
+// is on a cell (a row's key or value): up/down move within the hovered
+// column, left/right switch columns, space/enter start the in-place edit of
+// the hovered cell, n appends a new variable and starts editing its key, d
+// deletes the hovered row, esc returns to the columns.
+func (m *model) handleVarsKey(msg tea.KeyMsg) {
+	v := m.varsFocus
+	if v.Editing {
+		m.handleVarsEditKey(msg)
+		return
+	}
+	keys := m.varsKeys()
+	nrows := len(keys)
+	switch msg.String() {
+	case "esc":
+		m.blurVariables()
+	case "up", "k":
+		if v.Row > 0 {
+			v.Row--
+		}
+	case "down", "j":
+		// With no variables yet, down moves onto the appended empty row.
+		if v.Row < nrows || (nrows == 0 && v.Row == 0) {
+			if v.Row < nrows || nrows == 0 {
+				v.Row++
+			}
+		}
+	case "left", "shift+tab":
+		if v.Col == varValue {
+			v.Col = varKey
+		}
+	case "right", "tab":
+		if v.Col == varKey && m.varsRowKey(v.Row) != "" {
+			v.Col = varValue
+		}
+	case "space", " ", "enter", "return":
+		key := m.varsRowKey(v.Row)
+		if key == "" {
+			m.varsStartNew()
+			return
+		}
+		v.Editing = true
+		if v.Col == varKey {
+			v.Buf = []rune(key)
+		} else {
+			v.Buf = []rune(m.cfg.GlobalVariables[key])
+		}
+	case "n":
+		m.varsStartNew()
+	case "d":
+		key := m.varsRowKey(v.Row)
+		if key == "" {
+			m.varsStatus = "no variable to delete"
+			return
+		}
+		m.prompt = &prompt{
+			kind:   promptConfirm,
+			label:  fmt.Sprintf("delete %q? (y/n)", key),
+			action: actDeletePair,
+		}
+	}
+}
+
+// handleVarsEditKey routes one key while an in-place edit is active on the
+// hovered cell. Enter commits the buffer to that cell and ends the edit; a
+// committed key cell renames the row (carrying its value over) and re-hovers
+// it by name; esc cancels the edit without losing the original text.
+func (m *model) handleVarsEditKey(msg tea.KeyMsg) {
+	v := m.varsFocus
+	switch {
+	case msg.Type == tea.KeyEsc:
+		m.cancelPrompt()
+		return
+	case msg.Type == tea.KeyEnter:
+		m.varsCommitCell()
+	case msg.Type == tea.KeyBackspace, msg.Type == tea.KeyDelete:
+		if len(v.Buf) > 0 {
+			out := make([]rune, len(v.Buf)-1)
+			copy(out, v.Buf[:len(v.Buf)-1])
+			v.Buf = out
+		}
+	case msg.Type == tea.KeyRunes:
+		out := make([]rune, 0, len(v.Buf)+len(msg.Runes))
+		out = append(out, v.Buf...)
+		out = append(out, msg.Runes...)
+		v.Buf = out
+		m.varsStatus = ""
+	case msg.Type == tea.KeySpace:
+		out := make([]rune, 0, len(v.Buf)+1)
+		out = append(out, v.Buf...)
+		out = append(out, ' ')
+		v.Buf = out
+		m.varsStatus = ""
+	}
+}
+
+// varsCommitCell commits the edit buffer to the hovered cell and ends the
+// in-place edit: a key cell renames the row (an empty or invalid name is
+// rejected with a status line and the edit stays open), a value cell writes
+// the variable's value. The hover re-lands on the committed cell, so the next
+// up/down move continues from there.
+func (m *model) varsCommitCell() {
+	v := m.varsFocus
+	text := strings.TrimSpace(string(v.Buf))
+	if v.Col == varKey {
+		if text == "" {
+			m.varsStatus = "need at least a key"
+			return
+		}
+		if !cmdx.IsValidVarName(text) {
+			m.varsStatus = fmt.Sprintf("%q is not a valid variable name (start with a letter or underscore, then letters, digits or underscores)", text)
+			return
+		}
+		oldKey := m.varsRowKey(v.Row)
+		val := ""
+		if oldKey != "" {
+			val = m.cfg.GlobalVariables[oldKey]
+		}
+		if oldKey != "" && oldKey != text {
+			delete(m.cfg.GlobalVariables, oldKey)
+		}
+		m.cfg.GlobalVariables[text] = val
+		v.Editing = false
+		if i := sort.SearchStrings(m.varsKeys(), text); i >= 0 && i < len(m.varsKeys()) && m.varsKeys()[i] == text {
+			v.Row = i
+		}
+		m.varsSaveNow()
+		return
+	}
+	key := m.varsRowKey(v.Row)
+	if key == "" {
+		m.varsStatus = "no variable to edit"
+		v.Editing = false
+		return
+	}
+	m.cfg.GlobalVariables[key] = text
+	v.Editing = false
+	m.varsSaveNow()
+}
+
+// varsStartNew moves the hover to a new row just past the last one (last line
+// +1) and starts the in-place edit of its key cell.
+func (m *model) varsStartNew() {
+	v := m.varsFocus
+	keys := m.varsKeys()
+	v.Row = len(keys)
+	v.Col = varKey
+	v.Editing = true
+	v.Buf = nil
+	m.varsStatus = ""
+}
+
+// varsDeletePrompt resolves the confirm prompt for deleting a global variable
+// (d): it removes the hovered row, keeps the hover on a valid cell, and
+// flushes to the config file. The shared actDeletePair action routes here
+// while the GLOBALS panel has focus, and to doDeletePair otherwise.
+func (m *model) varsDeletePrompt() {
+	key := m.varsRowKey(m.varsFocus.Row)
+	if key == "" {
+		return
+	}
+	delete(m.cfg.GlobalVariables, key)
+	keys := m.varsKeys()
+	v := m.varsFocus
+	if v.Row >= len(keys) {
+		v.Row = max(0, len(keys)-1)
+	}
+	m.varsSaveNow()
 }
 
 func (m *model) doDeletePair() {
@@ -1131,12 +1479,47 @@ func (m *model) detachedLogPath() string {
 	}
 }
 
-// currentVars returns the env vars for alias i's state: one per option
-// group, set to the group's selected (needle) option's value (its long text;
-// "" for a no-pair option), plus the alias's extra vars.
+// globalVarNames returns the names of the config's global variables.
+func (m *model) globalVarNames() []string {
+	out := make([]string, 0, len(m.cfg.GlobalVariables))
+	for k := range m.cfg.GlobalVariables {
+		out = append(out, k)
+	}
+	return out
+}
+
+// referencedGlobals returns the config's global variables whose names occur
+// (as a literal substring — see cmdx.ReferencedNames) in the given command
+// text. Global variables are only exposed to a command that references them;
+// they sit at the bottom of the precedence order, so a values column named
+// identically to one takes precedence over it without any warning.
+func (m *model) referencedGlobals(command string) map[string]string {
+	out := map[string]string{}
+	if len(m.cfg.GlobalVariables) == 0 {
+		return out
+	}
+	ref := cmdx.ReferencedNames(command, m.globalVarNames())
+	for k, v := range m.cfg.GlobalVariables {
+		if ref[k] {
+			out[k] = v
+		}
+	}
+	return out
+}
+
+// currentVars returns the env vars for alias i's state: the global variables
+// referenced by the alias's command or template (lowest precedence), one per
+// option group set to the group's selected (needle) option's value (its long
+// text; "" for a no-pair option), plus the alias's extra vars. A values column
+// named identically to a global variable overrides it, silently.
 func (m *model) currentVars(i int, st *aliasState) map[string]string {
 	alias := m.cfg.Aliases[i]
-	vars := map[string]string{}
+	// Globals referenced by the command or the template are exposed.
+	text := alias.Command
+	if alias.Template != "" {
+		text += "\n" + alias.Template
+	}
+	vars := m.referencedGlobals(text)
 	for _, g := range st.Groups {
 		vars[strings.ToUpper(g.Name)] = g.Pairs[g.Selected].Value()
 	}
@@ -1277,6 +1660,7 @@ func (m *model) View() string {
 	m.ensureInited(m.curAlias)
 	m.ensureInited(m.selAlias)
 	if m.short {
+		m.globalsRect = rect{} // the compact mode has no globals panel
 		return m.shortView()
 	}
 	var b strings.Builder
@@ -1284,8 +1668,169 @@ func (m *model) View() string {
 	b.WriteByte('\n')
 	b.WriteString(m.columns())
 	b.WriteByte('\n')
-	b.WriteString(m.footer())
+	// The footer is assembled in fixed order (status, GLOBALS, COMMAND, info,
+	// help) so the GLOBALS panel's screen position is known — mouse clicks
+	// use it to land on a row and cell. The columns' box height is
+	// height-1-len(footer), clamped to at least 4 like in columns(), so the
+	// footer starts right after it.
+	allFooter := m.footerLines()
+	statusLines := m.footerStatusLines()
+	globalsLines := m.globalsPanelLines()
+	commandLines := m.commandPanelLines()
+	helpLines := m.helpLines()
+	boxH := m.height - 1 - len(allFooter)
+	if boxH < 4 {
+		boxH = 4
+	}
+	m.globalsRect = rect{
+		x: 0,
+		y: 1 + boxH + len(statusLines),
+		w: m.width,
+		h: len(globalsLines),
+	}
+	var footer []string
+	footer = append(footer, statusLines...)
+	footer = append(footer, globalsLines...)
+	footer = append(footer, commandLines...)
+	if l := m.infoLine(); l != "" {
+		footer = append(footer, l)
+	}
+	footer = append(footer, helpLines...)
+	b.WriteString(strings.Join(footer, "\n"))
 	return b.String()
+}
+
+// globalsPanelLines is the GLOBALS panel of the full mode: a bordered box
+// (styled like the COMMAND panel) listing the config's global variables as
+// key/value rows. It sits in the footer just above the COMMAND panel and is
+// always present — when it has the keyboard focus ("v") it becomes the
+// in-place editor for the variables: the hovered cell (a row's key or value)
+// is highlighted, up/down move within the hovered column, left/right switch
+// columns, space/enter edits the hovered cell in place (the buffer renders on
+// the cell itself), n appends a new variable and starts editing its key, d
+// deletes the hovered row, and esc returns to the columns. More than
+// globalsPanelMaxRows variables scroll: the hovered row is kept in view.
+// Every change is flushed to the config file immediately. When no variables
+// are defined the panel holds a single muted hint row.
+func (m *model) globalsPanelLines() []string {
+	innerW := m.width - 4
+	if innerW < 10 {
+		innerW = 10
+	}
+	keyW := innerW / 2
+	valW := innerW - keyW - 1
+	focus := m.varsFocus != nil
+	keys := m.varsKeys()
+	nrows := len(keys)
+	// The appended empty row (row nrows) is addressable while focused: it is
+	// where "n" lands and where the hover rests when nothing is defined.
+	maxRow := nrows
+	if focus && (nrows == 0 || !m.varsFocus.Editing) {
+		maxRow = nrows // hovering the appended row is allowed
+	}
+	if m.varsFocus != nil && m.varsFocus.Row > maxRow {
+		m.varsFocus.Row = maxRow
+	}
+	visible := globalsPanelMaxRows
+	if nrows < visible {
+		visible = nrows
+	}
+	// Keep the hovered row in view (the appended row scrolls the last page).
+	top := 0
+	if focus && nrows > 0 {
+		r := m.varsFocus.Row
+		if r >= nrows {
+			r = nrows - 1
+		}
+		if r < top {
+			top = r
+		}
+		if r >= top+visible {
+			top = r - visible + 1
+		}
+		if top < 0 {
+			top = 0
+		}
+	}
+	var rows []string
+	for i := top; i < top+visible && i < nrows; i++ {
+		key := keys[i]
+		val := m.cfg.GlobalVariables[key]
+		hoverRow := focus && i == m.varsFocus.Row
+		editKey := hoverRow && m.varsFocus.Editing && m.varsFocus.Col == varKey
+		editVal := hoverRow && m.varsFocus.Editing && m.varsFocus.Col == varValue
+		keyText, valText := key, val
+		if editKey {
+			keyText = string(m.varsFocus.Buf) + "█"
+		}
+		if editVal {
+			valText = string(m.varsFocus.Buf) + "█"
+		}
+		var line string
+		if hoverRow && !m.varsFocus.Editing {
+			// Only the hovered cell carries the row background — never the
+			// whole line: hovering the key column must not paint the value
+			// column (and vice versa). The padding after the other cell is
+			// plain, so no stray highlight leaks past the hovered span.
+			if m.varsFocus.Col == varKey {
+				line = m.sty.RowCursor.Render(padRight(truncateStr(keyText, keyW), keyW))
+				line += " "
+				line += m.sty.Value.Render(truncateStr(valText, valW))
+			} else {
+				line = m.sty.Key.Render(truncateStr(keyText, keyW))
+				line += strings.Repeat(" ", keyW-lipgloss.Width(truncateStr(keyText, keyW)))
+				line += " "
+				line += m.sty.RowCursor.Render(truncateStr(valText, valW))
+			}
+		} else if editKey || editVal {
+			// In-place edit: the buffer renders on the cell itself, with the
+			// row background under the whole line.
+			if editKey {
+				line = m.sty.RowCursor.Render(padRight(truncateStr(keyText, keyW), keyW))
+				line += " "
+				line += m.sty.RowCursor.Render(truncateStr(valText, valW))
+			} else {
+				line = m.sty.RowCursor.Render(truncateStr(keyText, keyW))
+				line += m.sty.RowCursor.Render(strings.Repeat(" ", keyW-lipgloss.Width(truncateStr(keyText, keyW))))
+				line += m.sty.RowCursor.Render(" ")
+				line += m.sty.RowCursor.Render(truncateStr(valText, valW))
+			}
+			if dw := innerW - lipgloss.Width(line); dw > 0 {
+				line += m.sty.RowCursor.Render(strings.Repeat(" ", dw))
+			}
+		} else {
+			line = m.sty.Key.Render(truncateStr(keyText, keyW))
+			line += strings.Repeat(" ", keyW-lipgloss.Width(truncateStr(keyText, keyW)))
+			line += " "
+			line += m.sty.Value.Render(truncateStr(valText, valW))
+		}
+		rows = append(rows, padRight(line, innerW))
+	}
+	if len(rows) == 0 {
+		hint := "  (no global variables — press v and n to add one)"
+		if focus {
+			// The appended row is being hovered/edited: show the key buffer.
+			if m.varsFocus.Editing && m.varsFocus.Col == varKey {
+				line := m.sty.RowCursor.Render(padRight(truncateStr(string(m.varsFocus.Buf)+"█", keyW), keyW))
+				line += " "
+				line += m.sty.RowCursor.Render(strings.Repeat(" ", valW))
+				if dw := innerW - lipgloss.Width(line); dw > 0 {
+					line += m.sty.RowCursor.Render(strings.Repeat(" ", dw))
+				}
+				rows = append(rows, line)
+			} else {
+				rows = append(rows, m.sty.Muted.Render(padRight(hint, innerW)))
+			}
+		} else {
+			rows = append(rows, m.sty.Muted.Render(padRight(hint, innerW)))
+		}
+	}
+	bottom := padRight("", innerW) // box() needs every row exactly innerW wide
+	if focus && m.varsStatus != "" {
+		st := truncateStr(m.varsStatus, innerW)
+		bottom = m.sty.Status.Render(st + strings.Repeat(" ", innerW-lipgloss.Width(st)))
+	}
+	return strings.Split(m.box("globals", append(rows, bottom), innerW, focus), "\n")
 }
 
 // shortListRows is the number of value rows the compact mode shows.
@@ -2019,12 +2564,15 @@ func (m *model) box(title string, rows []string, innerW int, active bool) string
 	return bld.String()
 }
 
-// footerLines returns every footer line, top to bottom: the status/prompt/
-// command-panel line(s), the optional info line, then the context help
-// line(s).
+// footerLines returns every footer line, top to bottom: the status/prompt
+// line(s), the GLOBALS panel (always present in the full mode, above COMMAND —
+// it is also the "v"ariables editor when focused), the live command panel,
+// the optional info line, then the context help line(s).
 func (m *model) footerLines() []string {
 	var lines []string
 	lines = append(lines, m.footerStatusLines()...)
+	lines = append(lines, m.globalsPanelLines()...)
+	lines = append(lines, m.commandPanelLines()...)
 	if l := m.infoLine(); l != "" {
 		lines = append(lines, l)
 	}
@@ -2036,11 +2584,10 @@ func (m *model) footer() string {
 	return strings.Join(m.footerLines(), "\n")
 }
 
-// footerStatusLines is the top footer line(s): an open prompt, a transient
-// status, or the live command panel (the bordered COMMAND box encapsulating
-// the preview). The active search renders no footer line: its input lives
-// inside the searched column (searchLine), as it is contextual to that
-// column's content.
+// footerStatusLines is the top footer line(s): an open prompt or a transient
+// status. The GLOBALS and COMMAND panels follow on their own (footerLines);
+// the active search renders no footer line here: its input lives inside the
+// searched column (searchLine), as it is contextual to that column's content.
 func (m *model) footerStatusLines() []string {
 	if m.prompt != nil {
 		if m.prompt.kind == promptInput {
@@ -2051,7 +2598,7 @@ func (m *model) footerStatusLines() []string {
 	if m.status != "" {
 		return []string{m.sty.Status.Render(padRight(m.status, m.width))}
 	}
-	return m.commandPanelLines()
+	return nil
 }
 
 // commandPanelLines is the live command preview as a full-width bordered
@@ -2117,6 +2664,25 @@ func (m *model) fullHelpItems() []helpItem {
 			{"n", "o"},
 		}
 	}
+	if m.varsFocus != nil {
+		// The GLOBALS panel has the keyboard focus ("v"): its own legend, in
+		// the same format as the main menu. Esc returns to the columns; every
+		// change is saved to the config file immediately.
+		items := []helpItem{
+			helpExit,
+			{keySpace, " edit"},
+			{keyMove, " move"},
+			{"n", "ew"},
+			{"d", "elete"},
+		}
+		if m.varsFocus.Editing {
+			items = []helpItem{
+				{keyEnter, " next/commit"},
+				{keyEsc, " cancel"},
+			}
+		}
+		return items
+	}
 	if m.search {
 		items := []helpItem{
 			{keyEsc, " exit filter"},
@@ -2138,6 +2704,7 @@ func (m *model) fullHelpItems() []helpItem {
 			helpItem{keyClick, " focus/select"},
 			helpItem{keyEnter, " run"},
 			helpItem{"f", "ilter"},
+			helpItem{"v", "ariables"},
 			helpItem{"c", "opy"},
 			helpItem{keyCtrl + "s", "ave"},
 			helpItem{"b", "ackground"},
@@ -2150,6 +2717,7 @@ func (m *model) fullHelpItems() []helpItem {
 			helpItem{keyClick, " focus/select"},
 			helpItem{keyEnter, " run"},
 			helpItem{"f", "ilter"},
+			helpItem{"v", "ariables"},
 			helpItem{"n", "ew"},
 			helpItem{keyDel, " delete"},
 			helpItem{"c", "opy"},
