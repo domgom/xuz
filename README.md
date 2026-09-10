@@ -292,6 +292,7 @@ xuz list | ls [--names]      list aliases and options (--names: the alias
                              names only, one per line — used by the shell
                              completion scripts)
 xuz themes                   list themes (builtins + custom, marks active)
+xuz theme-sync               sync current Omarchy theme into xuz config
 xuz init [--config PATH]     write the sample config
 xuz show <alias>             print resolved selections + substituted command
 xuz completions [shell]      print a shell completion script (bash | zsh |
@@ -342,6 +343,56 @@ too — define such aliases before the line above.
 
 The alias names are read with `xuz ls --names` at completion time, so new
 aliases in the config are completed without regenerating the script.
+
+## Omarchy theme syncing
+
+When running on [Omarchy](https://omarchy.org/), xuz can automatically adopt
+the active desktop theme so its colors always match your Hyprland theme.
+
+**Manual sync** — run once after installing xuz:
+
+```sh
+xuz theme-sync
+```
+
+This reads `$HOME/.local/state/omarchy/current/theme.name`, finds the theme's
+`colors.toml` (from `~/.config/omarchy/themes/<slug>/` or
+`/usr/share/omarchy/themes/<slug>/`), maps the color fields to a xuz custom
+theme, sets it as the active theme, and saves the config.
+
+**Automatic sync** — install a hook so it runs every time you change your
+Omarchy theme:
+
+```sh
+mkdir -p ~/.config/omarchy/hooks/theme-set.d/
+cp $(which xuz)/../scripts/theme-sync.sh ~/.config/omarchy/hooks/theme-set.d/
+chmod +x ~/.config/omarchy/hooks/theme-set.d/sync-xuz.sh
+```
+
+The hook script receives the new theme slug as `$1` and runs `theme-sync.sh`
+to update `~/.xuz/config.yml` in place. It writes a `themes:` block with all
+mapped colors and updates the `theme:` line to the new slug.
+
+**Field mapping** (Omarchy `colors.toml` → xuz theme field):
+
+| Omarchy field            | xuz field        |
+|--------------------------|------------------|
+| `background`             | `bg`             |
+| `foreground`             | `fg`             |
+| `accent`                 | `accent`         |
+| `green`                  | `selected`       |
+| `lighter_background`     | `cursor_bg`      |
+| `foreground`             | `cursor_fg`      |
+| `selection`              | `border`         |
+| `accent`                 | `border_active`  |
+| `accent`                 | `title`          |
+| `dark_foreground`        | `muted`          |
+| `accent`                 | `status`         |
+| `dark_foreground`        | `help`           |
+| `red`                    | `error`          |
+| `green`                  | `success`        |
+
+If a theme slug has no `colors.toml` (some user themes ship only terminal/Hyprland configs), the sync prints an error and leaves the config unchanged.
 
 ## Development
 
