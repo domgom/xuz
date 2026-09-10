@@ -144,8 +144,9 @@ type model struct {
 	short        bool // compact inline mode (alias search + one option column at a time)
 	modeSwitch   bool // "/" was pressed: the Run loop restarts in the other mode
 	aliasIconW   int  // alias column icon slot: the widest alias icon in cells (0 when none)
-	varsFocus    *variablesState // the GLOBALS panel focus state (nil = the columns have focus)
-	varsStatus   string          // transient message shown in the GLOBALS panel's bottom line only (never in the footer status line)
+	varsFocus     *variablesState // the GLOBALS panel focus state (nil = the columns have focus)
+	varsStatus    string          // transient message shown in the GLOBALS panel's bottom line only (never in the footer status line)
+	varsDisplay   []string        // display order of the global variables: config-file order, new variables appended at the end (rebuilt when stale)
 	globalsRect  rect            // where the GLOBALS panel was drawn in the last View (for mouse clicks)
 }
 
@@ -330,6 +331,7 @@ func (m *model) handleMouse(msg tea.MouseMsg) {
 		// top border. The layout only holds the rendered (visible) columns.
 		row := msg.Y - (cl.y + 1)
 		col := m.viewStart + i // 0 = alias column, 1.. = option columns
+		m.blurVariables() // any click on a column takes the focus off the GLOBALS panel
 		if row < 0 || row >= cl.contentLines || cl.top+row >= len(cl.items) {
 			// Clicked the border, title bar or padding: only focus the column.
 			m.curCol = col
@@ -364,6 +366,7 @@ func (m *model) handleMouse(msg tea.MouseMsg) {
 func (m *model) mouseGlobalsCell(msg tea.MouseMsg) {
 	r := m.globalsRect
 	row := msg.Y - (r.y + 1) // content rows start below the top border
+	m.blurVariables() // a click is always a fresh focus: no stale hover survives
 	if m.varsFocus == nil {
 		m.varsFocus = &variablesState{}
 	}
@@ -1100,14 +1103,41 @@ func (m *model) blurVariables() {
 }
 
 // varsKeys returns the global variable names in the GLOBALS panel's display
-// order (sorted).
+// order: existing variables keep the order they were added in (config-file
+// order when first loaded), and new variables are appended at the end — they
+// are always added at the bottom of the list. The order is cached in
+// m.varsDisplay and rebuilt lazily when it goes stale (a name missing from
+// it, or a length mismatch). Names that are not in the cache yet (new
+// variables) are appended sorted, so a fresh rebuild stays deterministic.
 func (m *model) varsKeys() []string {
-	keys := make([]string, 0, len(m.cfg.GlobalVariables))
-	for k := range m.cfg.GlobalVariables {
-		keys = append(keys, k)
+	stale := len(m.varsDisplay) != len(m.cfg.GlobalVariables)
+	if !stale {
+		for _, k := range m.varsDisplay {
+			if _, ok := m.cfg.GlobalVariables[k]; !ok {
+				stale = true
+				break
+			}
+		}
 	}
-	sort.Strings(keys)
-	return keys
+	if stale {
+		kept := make([]string, 0, len(m.cfg.GlobalVariables))
+		seen := map[string]bool{}
+		for _, k := range m.varsDisplay {
+			if _, ok := m.cfg.GlobalVariables[k]; ok && !seen[k] {
+				kept = append(kept, k)
+				seen[k] = true
+			}
+		}
+		var fresh []string
+		for k := range m.cfg.GlobalVariables {
+			if !seen[k] {
+				fresh = append(fresh, k)
+			}
+		}
+		sort.Strings(fresh)
+		m.varsDisplay = append(kept, fresh...)
+	}
+	return m.varsDisplay
 }
 
 // varsRowKey returns the variable name of row i ("" past the end).
@@ -1179,13 +1209,14 @@ func (m *model) handleVarsKey(msg tea.KeyMsg) {
 		if v.Row > 0 {
 			v.Row--
 		}
+		m.varsStatus = "" // the transient save message yields to the new hover
 	case "down", "j":
-		// With no variables yet, down moves onto the appended empty row.
-		if v.Row < nrows || (nrows == 0 && v.Row == 0) {
-			if v.Row < nrows || nrows == 0 {
-				v.Row++
-			}
+		// The appended empty row (row nrows) sits just past the last
+		// variable; down reaches it, and stays on it.
+		if v.Row < nrows {
+			v.Row++
 		}
+		m.varsStatus = "" // the transient save message yields to the new hover
 	case "left", "shift+tab":
 		if v.Col == varValue {
 			v.Col = varKey
@@ -1197,6 +1228,7 @@ func (m *model) handleVarsKey(msg tea.KeyMsg) {
 	case "space", " ", "enter", "return":
 		key := m.varsRowKey(v.Row)
 		if key == "" {
+			// The appended empty row: create a new variable in place.
 			m.varsStartNew()
 			return
 		}
@@ -1206,12 +1238,10 @@ func (m *model) handleVarsKey(msg tea.KeyMsg) {
 		} else {
 			v.Buf = []rune(m.cfg.GlobalVariables[key])
 		}
-	case "n":
-		m.varsStartNew()
 	case "d":
 		key := m.varsRowKey(v.Row)
 		if key == "" {
-			m.varsStatus = "no variable to delete"
+			m.varsStatus = "nothing to delete here"
 			return
 		}
 		m.prompt = &prompt{
@@ -1282,9 +1312,9 @@ func (m *model) varsCommitCell() {
 		}
 		m.cfg.GlobalVariables[text] = val
 		v.Editing = false
-		if i := sort.SearchStrings(m.varsKeys(), text); i >= 0 && i < len(m.varsKeys()) && m.varsKeys()[i] == text {
-			v.Row = i
-		}
+		// The hover stays on the created row: new variables are always added
+		// at the bottom of the list, so the cursor rests there too (the panel
+		// scrolls to keep it in view), whatever the name sorts to.
 		m.varsSaveNow()
 		return
 	}
@@ -1722,25 +1752,29 @@ func (m *model) globalsPanelLines() []string {
 	focus := m.varsFocus != nil
 	keys := m.varsKeys()
 	nrows := len(keys)
-	// The appended empty row (row nrows) is addressable while focused: it is
-	// where "n" lands and where the hover rests when nothing is defined.
-	maxRow := nrows
-	if focus && (nrows == 0 || !m.varsFocus.Editing) {
-		maxRow = nrows // hovering the appended row is allowed
+	// The appended empty row (row nrows) is always part of the list while the
+	// panel has focus: it sits just past the last variable, is where a new
+	// variable is created in place, and shows the create hint when hovered.
+	totalRows := nrows
+	if focus {
+		totalRows++ // the appended row
 	}
-	if m.varsFocus != nil && m.varsFocus.Row > maxRow {
-		m.varsFocus.Row = maxRow
+	if m.varsFocus != nil && m.varsFocus.Row > totalRows-1 {
+		m.varsFocus.Row = totalRows - 1
 	}
 	visible := globalsPanelMaxRows
-	if nrows < visible {
-		visible = nrows
+	if totalRows < visible {
+		visible = totalRows
 	}
-	// Keep the hovered row in view (the appended row scrolls the last page).
+	// Keep the hovered row in view. The window always reserves a slot for
+	// the appended row while focused, so reaching it scrolls the list one
+	// more position: the create hint never obscures the new variable's key
+	// entry (the previous page's last row scrolls out to make room).
 	top := 0
-	if focus && nrows > 0 {
+	if focus && totalRows > 0 {
 		r := m.varsFocus.Row
 		if r >= nrows {
-			r = nrows - 1
+			r = max(0, nrows-1)
 		}
 		if r < top {
 			top = r
@@ -1748,12 +1782,18 @@ func (m *model) globalsPanelLines() []string {
 		if r >= top+visible {
 			top = r - visible + 1
 		}
+		if m.varsFocus.Row >= nrows && top > 0 {
+			top-- // one more position: make room for the appended row
+		}
 		if top < 0 {
 			top = 0
 		}
 	}
 	var rows []string
-	for i := top; i < top+visible && i < nrows; i++ {
+	for i := top; i < top+visible && i < totalRows; i++ {
+		if i == nrows {
+			break // the appended row is rendered after the loop
+		}
 		key := keys[i]
 		val := m.cfg.GlobalVariables[key]
 		hoverRow := focus && i == m.varsFocus.Row
@@ -1770,9 +1810,23 @@ func (m *model) globalsPanelLines() []string {
 		if hoverRow && !m.varsFocus.Editing {
 			// Only the hovered cell carries the row background — never the
 			// whole line: hovering the key column must not paint the value
-			// column (and vice versa). The padding after the other cell is
-			// plain, so no stray highlight leaks past the hovered span.
+			// column (and vice versa). The highlighted span always covers the
+			// full cell width, so an empty value still shows its selection.
 			if m.varsFocus.Col == varKey {
+				line = m.sty.RowCursor.Render(padRight(truncateStr(keyText, keyW), keyW))
+				line += " "
+				line += m.sty.Value.Render(padRight(truncateStr(valText, valW), valW))
+			} else {
+				line = m.sty.Key.Render(truncateStr(keyText, keyW))
+				line += strings.Repeat(" ", keyW-lipgloss.Width(truncateStr(keyText, keyW)))
+				line += " "
+				line += m.sty.RowCursor.Render(padRight(truncateStr(valText, valW), valW))
+			}
+		} else if editKey || editVal {
+			// In-place edit: the buffer renders on the cell itself. Only the
+			// edited cell's span carries the row background — the other cell
+			// and its padding stay plain, like a plain hover.
+			if editKey {
 				line = m.sty.RowCursor.Render(padRight(truncateStr(keyText, keyW), keyW))
 				line += " "
 				line += m.sty.Value.Render(truncateStr(valText, valW))
@@ -1780,23 +1834,7 @@ func (m *model) globalsPanelLines() []string {
 				line = m.sty.Key.Render(truncateStr(keyText, keyW))
 				line += strings.Repeat(" ", keyW-lipgloss.Width(truncateStr(keyText, keyW)))
 				line += " "
-				line += m.sty.RowCursor.Render(truncateStr(valText, valW))
-			}
-		} else if editKey || editVal {
-			// In-place edit: the buffer renders on the cell itself, with the
-			// row background under the whole line.
-			if editKey {
-				line = m.sty.RowCursor.Render(padRight(truncateStr(keyText, keyW), keyW))
-				line += " "
-				line += m.sty.RowCursor.Render(truncateStr(valText, valW))
-			} else {
-				line = m.sty.RowCursor.Render(truncateStr(keyText, keyW))
-				line += m.sty.RowCursor.Render(strings.Repeat(" ", keyW-lipgloss.Width(truncateStr(keyText, keyW))))
-				line += m.sty.RowCursor.Render(" ")
-				line += m.sty.RowCursor.Render(truncateStr(valText, valW))
-			}
-			if dw := innerW - lipgloss.Width(line); dw > 0 {
-				line += m.sty.RowCursor.Render(strings.Repeat(" ", dw))
+				line += m.sty.RowCursor.Render(padRight(truncateStr(valText, valW), valW))
 			}
 		} else {
 			line = m.sty.Key.Render(truncateStr(keyText, keyW))
@@ -1806,31 +1844,56 @@ func (m *model) globalsPanelLines() []string {
 		}
 		rows = append(rows, padRight(line, innerW))
 	}
-	if len(rows) == 0 {
-		hint := "  (no global variables — press v and n to add one)"
-		if focus {
-			// The appended row is being hovered/edited: show the key buffer.
-			if m.varsFocus.Editing && m.varsFocus.Col == varKey {
-				line := m.sty.RowCursor.Render(padRight(truncateStr(string(m.varsFocus.Buf)+"█", keyW), keyW))
-				line += " "
-				line += m.sty.RowCursor.Render(strings.Repeat(" ", valW))
-				if dw := innerW - lipgloss.Width(line); dw > 0 {
-					line += m.sty.RowCursor.Render(strings.Repeat(" ", dw))
-				}
-				rows = append(rows, line)
-			} else {
-				rows = append(rows, m.sty.Muted.Render(padRight(hint, innerW)))
-			}
+	if !focus && len(rows) == 0 {
+		hint := "  (no global variables — press v to focus and create one)"
+		rows = append(rows, m.sty.Muted.Render(padRight(hint, innerW)))
+	}
+	if focus && top+visible > nrows {
+		// The appended empty row: blank when not hovered, the in-place key
+		// buffer while a new variable is being created on it.
+		hoverAppended := m.varsFocus.Row == nrows
+		editAppended := hoverAppended && m.varsFocus.Editing && m.varsFocus.Col == varKey
+		if editAppended {
+			line := m.sty.RowCursor.Render(padRight(truncateStr(string(m.varsFocus.Buf)+"█", keyW), keyW))
+			line += " "
+			line += m.sty.RowCursor.Render(strings.Repeat(" ", valW))
+			rows = append(rows, line)
+		} else if hoverAppended {
+			line := m.sty.RowCursor.Render(padRight("", keyW))
+			line += " "
+			line += m.sty.RowCursor.Render(strings.Repeat(" ", valW))
+			rows = append(rows, line)
 		} else {
-			rows = append(rows, m.sty.Muted.Render(padRight(hint, innerW)))
+			rows = append(rows, strings.Repeat(" ", innerW))
 		}
 	}
 	bottom := padRight("", innerW) // box() needs every row exactly innerW wide
-	if focus && m.varsStatus != "" {
-		st := truncateStr(m.varsStatus, innerW)
-		bottom = m.sty.Status.Render(st + strings.Repeat(" ", innerW-lipgloss.Width(st)))
+	if focus {
+		if m.varsStatus != "" {
+			st := truncateStr(m.varsStatus, innerW)
+			bottom = m.sty.Status.Render(st + strings.Repeat(" ", innerW-lipgloss.Width(st)))
+		} else if !m.varsFocus.Editing && m.varsFocus.Row >= nrows {
+			// Hovering the appended empty row: the create hint, in the same
+			// position as the save messages and in the legend's language —
+			// highlighted shortcut glyphs, a plain separator, muted words.
+			bottom = m.createHintLine(innerW)
+		}
 	}
 	return strings.Split(m.box("globals", append(rows, bottom), innerW, focus), "\n")
+}
+
+// createHintLine is the "↵/ select create" hint shown while the appended
+// empty row is hovered: the shortcut glyphs in the legend's highlighted key
+// style, the "/" separator in plain text, and the words muted — the same
+// language as the shortcut legends.
+func (m *model) createHintLine(w int) string {
+	bold := lipgloss.NewStyle().Bold(true)
+	enterSpan := bold.Render(m.sty.HelpKey.Render(keyEnter))
+	spaceSpan := bold.Render(m.sty.HelpKey.Render(keySpace))
+	mid := m.sty.Help.Render(" / ")
+	tail := m.sty.Help.Render(" select create")
+	line := enterSpan + mid + spaceSpan + tail
+	return padRight(line, w)
 }
 
 // shortListRows is the number of value rows the compact mode shows.
@@ -2361,7 +2424,8 @@ func (m *model) searchLine(w int) string {
 }
 
 func (m *model) aliasColumn(w, h int) (string, int, []int) {
-	active := m.curCol == 0
+	// While the GLOBALS panel has the focus ("v"), the columns are muted.
+	active := m.varsFocus == nil && m.curCol == 0
 	contentLines := h - 2
 	innerW := w - 4
 	searching := m.search && active
@@ -2411,7 +2475,8 @@ func (m *model) aliasColumn(w, h int) (string, int, []int) {
 }
 
 func (m *model) optionColumn(g *groupState, w, h, colIdx int) (string, int, []int) {
-	active := m.curCol == colIdx
+	// While the GLOBALS panel has the focus ("v"), the columns are muted.
+	active := m.varsFocus == nil && m.curCol == colIdx
 	contentLines := h - 2
 	innerW := w - 4
 	searching := m.search && active
@@ -2538,6 +2603,9 @@ func (m *model) pairLine(g *groupState, i, w int, active bool) string {
 // box draws a bordered column with a label embedded in the top border.
 // rows must all be exactly innerW wide; the frame is innerW+4 wide.
 func (m *model) box(title string, rows []string, innerW int, active bool) string {
+	// The colors are normalized so lipgloss always picks the same color space
+	// (a raw uppercase hex like "#FF8931" would otherwise fall back to the
+	// ANSI 256 palette while the titles use truecolor).
 	var b, t lipgloss.Color
 	if active {
 		b, t = theme.NormalizeColor(m.th.BorderActive), theme.NormalizeColor(m.th.Title)
@@ -2672,7 +2740,6 @@ func (m *model) fullHelpItems() []helpItem {
 			helpExit,
 			{keySpace, " edit"},
 			{keyMove, " move"},
-			{"n", "ew"},
 			{"d", "elete"},
 		}
 		if m.varsFocus.Editing {

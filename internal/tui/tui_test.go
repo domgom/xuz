@@ -3192,11 +3192,15 @@ global_variables:
 	}
 	view = m.View()
 	mustContain(t, view, "GLOBALS", "ENV", "dev")
-	// The legend switches to the panel's own, in the main menu format.
-	for _, want := range []string{"exit", "edit", "move", "ew", "elete"} {
+	// The legend switches to the panel's own, in the main menu format (no
+	// "n"ew: new variables are created on the appended empty row).
+	for _, want := range []string{"exit", "edit", "move", "elete"} {
 		if !strings.Contains(ansi.Strip(view), want) {
 			t.Errorf("legend missing %q", want)
 		}
+	}
+	if strings.Contains(ansi.Strip(view), "ew") {
+		t.Error("the legend must not advertise an n shortcut anymore")
 	}
 	// The picker's state is preserved underneath.
 	if m.curAlias != 0 || m.curCol != 1 {
@@ -3238,11 +3242,12 @@ func TestVariablesNewAndFlush(t *testing.T) {
 	if m.varsFocus == nil {
 		t.Fatal("varsFocus should be set after v")
 	}
-	// No variables yet: n moves to the appended row and edits its key in place.
-	send(t, m, nKey)
+	// No variables yet: the appended empty row is row 0; space on it creates
+	// a new variable in place.
+	send(t, m, spaceKey)
 	v := m.varsFocus
 	if !v.Editing || v.Col != varKey || v.Row != 0 {
-		t.Fatalf("n should start editing the key of the new row, got %+v", v)
+		t.Fatalf("space on the appended row should start editing its key, got %+v", v)
 	}
 	typeStr(t, m, "ENV")
 	send(t, m, enterKey) // commit the key cell
@@ -3281,7 +3286,7 @@ func TestVariablesInvalidKeyRejected(t *testing.T) {
 	m := newModel(t, cfg, "llama")
 	m.View()
 	send(t, m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("v")})
-	send(t, m, nKey)
+	send(t, m, spaceKey) // create on the appended empty row
 	typeStr(t, m, "1BAD")
 	send(t, m, enterKey)
 	if !m.varsFocus.Editing {
@@ -3689,7 +3694,7 @@ func TestGlobalsSaveMessageSingleInstance(t *testing.T) {
 	m := newModel(t, cfg, "llama")
 	m.View()
 	send(t, m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("v")})
-	send(t, m, nKey)
+	send(t, m, spaceKey) // create on the appended empty row
 	typeStr(t, m, "ENV")
 	send(t, m, enterKey) // commit the key cell -> flush
 	view := ansi.Strip(m.View())
@@ -3796,9 +3801,209 @@ global_variables:
 	if m.varsFocus.Row != 0 || m.varsFocus.Col != varValue {
 		t.Errorf("after value click: row=%d col=%v, want 0/value", m.varsFocus.Row, m.varsFocus.Col)
 	}
-	// Click the panel's top border: only focus (hover untouched).
+	// Click the panel's top border: re-focuses the panel fresh (the hover is
+	// reset to the first row's key cell — no stale state survives a click).
 	mouseClick(t, m, r.x+2, r.y)
-	if m.varsFocus.Row != 0 || m.varsFocus.Col != varValue {
-		t.Errorf("after border click: row=%d col=%v, want hover kept at 0/value", m.varsFocus.Row, m.varsFocus.Col)
+	if m.varsFocus.Row != 0 || m.varsFocus.Col != varKey {
+		t.Errorf("after border click: row=%d col=%v, want 0/key", m.varsFocus.Row, m.varsFocus.Col)
+	}
+	// Click the appended empty row (just past BETA): hovers it.
+	mouseClick(t, m, r.x+2, r.y+1+2)
+	if m.varsFocus.Row != 2 || m.varsFocus.Col != varKey {
+		t.Errorf("after appended-row click: row=%d col=%v, want 2/key", m.varsFocus.Row, m.varsFocus.Col)
+	}
+}
+
+// TestGlobalsAppendedRowCreateHint guards the appended empty row of the
+// focused GLOBALS panel: moving past the last variable lands on it, and while
+// it is hovered (not editing) the create hint shows in the panel's bottom
+// line — the same position as the save messages. Space/enter on it starts
+// creating a new variable in place; a created variable lands at the bottom of
+// the list and the hover stays on it.
+func TestGlobalsAppendedRowCreateHint(t *testing.T) {
+	cfg := cfgFromYAML(t, `aliases:
+  tf-plan:
+    options:
+      env:
+        - dev: !default
+      command: terraform plan ${ENV}
+global_variables:
+  ALPHA: a
+  BETA: b
+`)
+	m := newModel(t, cfg, "tf-plan")
+	m.View()
+	send(t, m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("v")})
+	// Move down past the last variable (BETA) onto the appended row.
+	send(t, m, downKey) // row 0 -> 1
+	send(t, m, downKey) // row 1 -> 2 (appended)
+	if m.varsFocus.Row != 2 {
+		t.Fatalf("row = %d, want 2 (the appended row)", m.varsFocus.Row)
+	}
+	view := ansi.Strip(m.View())
+	if !strings.Contains(view, "create") {
+		t.Errorf("the create hint should show while the appended row is hovered:\n%s", view)
+	}
+	// The hint sits in the panel's bottom line (same place as save messages):
+	// it must appear after the last variable row and before the closing border.
+	panelLines := strings.Split(strings.Join(m.globalsPanelLines(), "\n"), "\n")
+	hintIdx, betaIdx, closeIdx := -1, -1, -1
+	for i, l := range panelLines {
+		if strings.Contains(l, "create") {
+			hintIdx = i
+		}
+		if strings.Contains(l, "BETA") {
+			betaIdx = i
+		}
+		if strings.HasPrefix(l, "└") {
+			closeIdx = i
+		}
+	}
+	if !(hintIdx > betaIdx && hintIdx < closeIdx) {
+		t.Errorf("create hint position wrong: hint=%d beta=%d close=%d", hintIdx, betaIdx, closeIdx)
+	}
+	// Space on the appended row starts creating a new variable in place.
+	send(t, m, spaceKey)
+	if !m.varsFocus.Editing || m.varsFocus.Col != varKey {
+		t.Fatalf("space should start editing the appended row's key, got %+v", m.varsFocus)
+	}
+	typeStr(t, m, "ZETA")
+	send(t, m, enterKey) // commit the key -> lands at the bottom (sorted)
+	if m.varsFocus.Row != 2 {
+		t.Fatalf("hover should stay on the new row, got %d", m.varsFocus.Row)
+	}
+	if cfg.GlobalVariables["ZETA"] != "" {
+		t.Errorf("GlobalVariables = %+v", cfg.GlobalVariables)
+	}
+	// The panel shows ZETA at the bottom, above the appended row.
+	view = ansi.Strip(m.View())
+	if strings.Index(view, "ZETA") < 0 || strings.Index(view, "BETA") > strings.Index(view, "ZETA") {
+		t.Errorf("ZETA should be listed after BETA:\n%s", view)
+	}
+}
+
+// TestGlobalsNewVariableLandsAtBottom guards that a variable created on the
+// appended row is listed at the bottom of the panel (after the last existing
+// variable), whatever its name sorts to — and that the save message does not
+// hide the appended row: moving down again shows it, with the create hint.
+func TestGlobalsNewVariableLandsAtBottom(t *testing.T) {
+	cfg := cfgFromYAML(t, `aliases:
+  tf-plan:
+    options:
+      env:
+        - dev: !default
+      command: terraform plan ${ENV}
+global_variables:
+  MIDDLE: m
+  ZLAST: z
+`)
+	m := newModel(t, cfg, "tf-plan")
+	m.View()
+	send(t, m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("v")})
+	// Move to the appended row (past MIDDLE and ZLAST) and create "AAA" — a
+	// name that would sort first alphabetically.
+	for i := 0; i < 2; i++ {
+		send(t, m, downKey)
+	}
+	if m.varsFocus.Row != 2 {
+		t.Fatalf("row = %d, want the appended row (2)", m.varsFocus.Row)
+	}
+	send(t, m, spaceKey)
+	typeStr(t, m, "AAA")
+	send(t, m, enterKey) // commit the key
+	// The panel must list AAA at the bottom, after ZLAST.
+	view := ansi.Strip(m.View())
+	if strings.Index(view, "ZLAST") < 0 || strings.Index(view, "AAA") < 0 {
+		t.Fatalf("panel missing rows:\n%s", view)
+	}
+	if strings.Index(view, "AAA") < strings.Index(view, "ZLAST") {
+		t.Errorf("AAA must be listed at the bottom (after ZLAST):\n%s", view)
+	}
+	// The save message is transient: moving down onto the appended row again
+	// brings it back with the create hint.
+	send(t, m, downKey)
+	if m.varsFocus.Row != 3 {
+		t.Fatalf("row = %d, want the appended row (3)", m.varsFocus.Row)
+	}
+	view = ansi.Strip(m.View())
+	if !strings.Contains(view, "create") {
+		t.Errorf("the appended row should be visible with the create hint:\n%s", view)
+	}
+	if strings.Count(view, "variables saved to") != 0 {
+		t.Errorf("the save message should have cleared when the hover moved:\n%s", view)
+	}
+}
+
+// sgrPrefix extracts the leading SGR escape sequence (up to and including the
+// final "m") that lipgloss emits for a rendered span — used to compare
+// border colors in views without hand-parsing hex values.
+func sgrPrefix(rendered string) string {
+	i := strings.Index(rendered, "\x1b[")
+	if i < 0 {
+		return ""
+	}
+	j := strings.Index(rendered[i:], "m")
+	if j < 0 {
+		return ""
+	}
+	return rendered[i : i+j+1]
+}
+
+// TestColumnsMutedWhileGlobalsFocused guards that focusing the GLOBALS panel
+// ("v") mutes every column box (border and title drop to the inactive style),
+// and that pressing esc restores the active style on the focused column.
+func TestColumnsMutedWhileGlobalsFocused(t *testing.T) {
+	cfg := loadCfg(t)
+	m := newModel(t, cfg, "")
+	prev := lipgloss.ColorProfile()
+	lipgloss.SetColorProfile(termenv.TrueColor)
+	defer lipgloss.SetColorProfile(prev)
+
+	activeBorder := theme.NormalizeColor(m.th.BorderActive)
+	inactiveBorder := theme.NormalizeColor(m.th.Border)
+	if string(activeBorder) == string(inactiveBorder) {
+		t.Skip("theme has no distinct active/inactive border colors")
+	}
+	// box() renders the border characters with a plain foreground style of the
+	// (normalized) color, so build the expected SGR runs through the same
+	// lipgloss code path (lipgloss applies its own color transform to hex
+	// values — parsing them by hand would not match).
+	activeSGR := sgrPrefix(lipgloss.NewStyle().Foreground(activeBorder).Render("x"))
+	mutedSGR := sgrPrefix(lipgloss.NewStyle().Foreground(inactiveBorder).Render("x"))
+
+	// Only the column boxes carry these border styles (the title bar and the
+	// GLOBALS panel use other colors), so scan just those lines. The box
+	// titles are separate styled spans from their borders, so match on the
+	// title text; exclude command-content lines that happen to mention a
+	// column name (e.g. "CONTEXT='65536'").
+	columnBorder := func(view string) string {
+		var out []string
+		for _, l := range strings.Split(view, "\n") {
+			if !strings.Contains(l, "ALIAS") && !strings.Contains(l, "MODEL") && !strings.Contains(l, "CONTEXT") {
+				continue
+			}
+			if strings.Contains(l, "$ ") || strings.Contains(l, "='") {
+				continue
+			}
+			out = append(out, l)
+		}
+		return strings.Join(out, "\n")
+	}
+	view := m.View()
+	if !strings.Contains(columnBorder(view), activeSGR) {
+		t.Fatalf("the focused column should carry the active border before v:\n%s", view)
+	}
+	send(t, m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("v")})
+	view = m.View()
+	if strings.Contains(columnBorder(view), activeSGR) {
+		t.Errorf("no column may carry the active border while GLOBALS has focus:\n%s", view)
+	}
+	if !strings.Contains(columnBorder(view), mutedSGR) {
+		t.Errorf("the columns should be rendered with the muted border while GLOBALS has focus:\n%s", view)
+	}
+	send(t, m, escKey)
+	view = m.View()
+	if !strings.Contains(columnBorder(view), activeSGR) {
+		t.Errorf("esc should restore the active border on the focused column:\n%s", view)
 	}
 }
