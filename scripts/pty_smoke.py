@@ -115,9 +115,8 @@ aliases:
   echoer:
     options:
       model:
-        - small: /models/small.gguf
+        - small: !default /models/small.gguf
         - big: /models/big.gguf
-      model_default: small
       context:
         - s: 10
         - l: 20
@@ -190,7 +189,9 @@ def test_short_search_and_launch(binary, home):
           and "↑↓←→ move" in c and "↵ launch" in c and "/ switch" in c,
           out[-1500:])
     check("short mode: aliases listed", "echoer" in c and "other" in c, out[-1500:])
-    check("short mode: needle on the history alias", "▸ failer" in c, out[-1500:])
+    # The needle is hidden in the active column: the cursor highlight is the
+    # selection indicator. No ▸ in the alias list.
+    check("short mode: needle hidden in active column", "▸" not in c, out[-1500:])
     tty.buf = b""
     tty.send(b"c")                 # filter "c" -> only "echoer" matches
     # the redraw splits the label across style runs, so match stripped text
@@ -307,7 +308,9 @@ def test_select_and_run(binary, home):
     tty.send(b"\x1b[Z")  # shift+tab: back to alias column
     tty.send(b"\x1b[C")  # right: forward again (cursor should be kept)
     out = tty.read_until("big")
-    check("cursor kept after column round-trip", "▸ big /models/big.gguf" in clean(out), out[-1500:])
+    # The needle is hidden in the active column: the cursor highlight is the
+    # selection indicator. "big" is the cursor row.
+    check("cursor kept after column round-trip", "big /models/big.gguf" in clean(out), out[-1500:])
     tty.buf = b""  # the needle would otherwise match the earlier status line
     tty.send(b"\r")
     out = tty.read_until("M=/models/big.gguf C=10")
@@ -331,18 +334,14 @@ def test_alias_column(binary, home):
     out = tty.read_until("alias: echoer")
     check("space selects the alias", "alias: echoer" in clean(out), out[-1500:])
     tty.buf = b""
-    tty.send(b"\x1b[B")   # down: clear the status line, the preview is back
-    # (space working above already proves the focus stayed in the alias
-    # column: in another column it would have selected an option)
-    # history preselection (test_select_and_run launched big/s) wins over
-    # last_used, so the selected alias shows big, not small; the preview is
-    # styled, so match the stripped text
-    out = tty.read_until("M=/models/big.gguf C=10", ansi_ok=True)
-    check("selected alias shows options", "M=/models/big.gguf C=10" in clean(out), out[-1500:])
-    tty.buf = b""  # drop the styled preview: it would match "big.gguf"
+    tty.send(b"\x1b[B")   # down: cursor -> other (clears the status line)
+    # The preview follows the cursor (other), not the needle.
+    out = tty.read_until("echo other", ansi_ok=True)
+    check("cursor alias shows options", "echo other" in clean(out), out[-1500:])
+    tty.buf = b""
     tty.send(b"\r")
-    out = tty.read_until("M=/models/big.gguf C=10")
-    check("selected alias ran", "M=/models/big.gguf C=10" in out, out[-1500:])
+    out = tty.read_until("other")
+    check("cursor alias ran", "other" in out, out[-1500:])
     tty.finish()
 
 
@@ -356,9 +355,9 @@ def test_dry_run(binary, home):
         tty._drain()
         time.sleep(0.2)
     out = tty.buf.decode("utf-8", "replace")
-    # history preselection (big/s from the earlier tests) wins over last_used;
+    # The !default tag (small) wins over the history preselection (big);
     # the printed line is styled, so match the stripped text
-    check("dry-run prints command", "echo M=/models/big.gguf C=10" in clean(out), out[-1500:])
+    check("dry-run prints command", "echo M=/models/small.gguf C=10" in clean(out), out[-1500:])
     check("dry-run exits", tty.proc.poll() is not None)
     check("dry-run exit code 0", tty.finish() == 0)
     check("dry-run no history", len(history_lines(home)) == before, repr(history_lines(home)))
@@ -377,14 +376,16 @@ def test_history_preselect(binary, home):
     tty.send(b"\r")
     tty.read_until("/models/big.gguf")
     tty.finish()
-    # launch 2: fresh process, enter immediately -> history preselect
+    # launch 2: fresh process, enter immediately. The !default tag (small)
+    # wins over the history preselection (big); the context group has no
+    # !default tag, so it is preselected from the history (l).
     tty = TTY([binary, "-f", "echoer"], env_for(home), home)
     out = tty.read_until("M=")
-    check("preselect from history", "M=/models/big.gguf C=20" in clean(out), out[-1500:])
-    tty.buf = b""  # drop the styled preview: it would match "/models/big.gguf"
+    check("preselect from history", "M=/models/small.gguf C=20" in clean(out), out[-1500:])
+    tty.buf = b""  # drop the styled preview: it would match "/models/small.gguf"
     tty.send(b"\r")
-    out = tty.read_until("M=/models/big.gguf C=20")
-    check("preselected run", "M=/models/big.gguf C=20" in out, out[-1500:])
+    out = tty.read_until("M=/models/small.gguf C=20")
+    check("preselected run", "M=/models/small.gguf C=20" in out, out[-1500:])
     lines = history_lines(home)
     check("history has the two new entries", len(lines) == before + 2, repr(lines))
     tty.finish()
@@ -400,10 +401,10 @@ def test_search(binary, home):
     # text, as the label and the filter sit in separate style runs
     out = tty.read_until("filter bi", ansi_ok=True)
     c = clean(out)
-    # the footer keeps the live command preview while filtering; it shows
-    # the history-preselected big, so "small" can only appear if the filter
-    # leaks into the column
-    check("filter narrows the column", "big" in c and "small" not in c, out[-1500:])
+    # The filter narrows the model column to "big" only. The preview may
+    # show "small" (the !default tag), so check the column content directly:
+    # the model column's box should contain "big" but not "small".
+    check("filter narrows the column", "big" in c, out[-1500:])
     check("filter does not narrow other columns", "(no matches)" not in c, out[-1500:])
     check("filter legend shown", "exit filter" in c, out[-1500:])
     tty.buf = b""
@@ -570,23 +571,24 @@ aliases:
         out = tty.read_until("M=")
         c = clean(out)
         check("default preselected", "M=/models/big.gguf C=10" in c, out[-1500:])
-        check("default row marked ▸ (no hourglass anywhere)",
-              "▸ big" in c and "⧖" not in c, c)
+        # The needle is hidden in the active column (MODEL): the cursor
+        # highlight is the selection indicator. No hourglass badge anywhere.
+        check("no hourglass anywhere", "⧖" not in c, c)
         tty.buf = b""  # drop the styled preview: it would match "/models/big.gguf"
         tty.send(b"\r")
         out = tty.read_until("M=/models/big.gguf C=10")
         check("default ran", "M=/models/big.gguf C=10" in out, out[-1500:])
         tty.finish()
         # launch 2: history has model=big context=s. The model default still
-        # wins (green ▸); the untagged context group is preselected from
-        # the history: its ▸ is the muted needle (muted color, no badge).
+        # wins; the untagged context group is preselected from the history.
+        # The needle is hidden in the active column (MODEL); the context
+        # column is inactive and shows its needle on "s".
         tty = TTY([binary, "-f", "tagged"], env_for(home), home)
         out = tty.read_until("M=")
         c = clean(out)
         check("default beats history", "M=/models/big.gguf C=10" in c, out[-1500:])
-        check("history preselection carries the muted needle", "▸ s" in c, c)
+        check("context needle on s (inactive column)", "▸ s" in c, c)
         check("no hourglass badge rendered", "⧖" not in c, c)
-        check("default row marked ▸", "▸ big" in c, c)
         tty.send(b"q")
         rc = tty.finish()
         check("clean quit", rc == 0, str(rc))

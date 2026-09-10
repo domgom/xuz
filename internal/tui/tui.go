@@ -832,17 +832,24 @@ func (m *model) moveCursor(delta int) {
 }
 
 func (m *model) prepareRun() {
-	// Enter runs the selected alias (the ▸ needle row), not necessarily the
-	// one under the cursor.
-	m.ensureAliasSel()
-	m.ensureInited(m.selAlias)
-	alias := m.cfg.Aliases[m.selAlias]
-	st := m.aliases[m.selAlias]
+	// Enter runs the alias under the cursor with the option under the cursor
+	// in the active column. The needle (▸) is hidden in the active column;
+	// when the user moves to another column, the previous selection reappears
+	// as the needle if it was not changed.
+	m.ensureInited(m.curAlias)
+	alias := m.cfg.Aliases[m.curAlias]
+	st := m.aliases[m.curAlias]
 	if alias.Command == "" {
 		m.status = "no command defined for this alias"
 		return
 	}
-	vars := m.currentVars(m.selAlias, st)
+	// The active column's cursor becomes its selection.
+	if m.curCol > 0 {
+		g := st.Groups[m.curCol-1]
+		g.Selected = g.Cursor
+		g.Src = srcUser
+	}
+	vars := m.currentVars(m.curAlias, st)
 	if m.dryRun {
 		cmd := alias.Command
 		if m.background {
@@ -1108,7 +1115,7 @@ func (m *model) detachedLogPath() string {
 		base = history.Path()
 	}
 	dir := filepath.Dir(base)
-	name := m.aliases[m.selAlias].Name + "-" + time.Now().Format("20060102-150405") + ".log"
+	name := m.aliases[m.curAlias].Name + "-" + time.Now().Format("20060102-150405") + ".log"
 	p := filepath.Join(dir, name)
 	for i := 1; ; i++ {
 		if _, err := os.Stat(p); os.IsNotExist(err) {
@@ -1709,33 +1716,29 @@ func (m *model) iconSlot(icon, color string, w int, cursor bool) string {
 // alias's own glyph or blank padding), a ▸ marker on the selected alias
 // (green, in the theme's muted color when the selection came from the
 // history — two spaces on every other row), then the alias name. The needle
-// marks the selection, not the cursor: the cursor row carries only the
-// background highlight. The row is built from styled spans like pairLine: on
-// the cursor row every span carries the row's background itself, so a
-// nested style's terminating reset cannot cut the highlight short.
+// is hidden in the active column: the cursor highlight is the selection
+// indicator there, and Enter runs the cursor's row. In inactive columns the
+// needle reappears on the previously selected alias. The row is built from
+// styled spans like pairLine: on the cursor row every span carries the row's
+// background itself, so a nested style's terminating reset cannot cut the
+// highlight short.
 func (m *model) aliasLine(i int) string {
 	a := m.aliases[i]
 	cursor := i == m.curAlias
-	selected := i == m.selAlias
+	active := m.curCol == 0
 	var line string
 	line += m.iconSlot(a.Icon, a.IconColor, m.aliasIconW, cursor)
-	if selected {
+	// The needle is hidden in the active column: the cursor highlight is the
+	// selection indicator there. In inactive columns the needle reappears on
+	// the previously selected alias.
+	if !active && i == m.selAlias {
 		muted := m.selAliasSrc == config.SourceHistory
-		if cursor {
-			if muted {
-				line += m.sty.MarkerMutedCur.Render("▸")
-			} else {
-				line += m.sty.MarkerCursor.Render("▸")
-			}
-			line += m.sty.RowCursor.Render(" ")
+		if muted {
+			line += m.sty.MarkerMuted.Render("▸")
 		} else {
-			if muted {
-				line += m.sty.MarkerMuted.Render("▸")
-			} else {
-				line += m.sty.Marker.Render("▸")
-			}
-			line += " "
+			line += m.sty.Marker.Render("▸")
 		}
+		line += " "
 	} else if cursor {
 		line += m.sty.RowCursor.Render("  ")
 	} else {
@@ -1868,35 +1871,30 @@ func (m *model) optionColumn(g *groupState, w, h, colIdx int) (string, int, []in
 // selected option (green normally, in the theme's muted color when the
 // preselection came from the history), the key (in the tag's color when the
 // option carries a !color tag), and the long_text when it differs from the
-// key (always in the muted value color). The cursor row is built from spans
-// that each carry
-// the cursor background themselves: a nested style's escapes end with a full
-// reset, so wrapping a pre-styled line in RowCursor would cut the highlight
-// off at the first inner reset. With the background baked into every span
-// the whole line is highlighted, whether or not the option is the selected
-// one.
+// key (always in the muted value color). The needle is hidden in the active
+// column: the cursor highlight is the selection indicator there, and Enter
+// runs the cursor's row. In inactive columns the needle reappears on the
+// previously selected option. The cursor row is built from spans that each
+// carry the cursor background themselves: a nested style's escapes end with
+// a full reset, so wrapping a pre-styled line in RowCursor would cut the
+// highlight off at the first inner reset. With the background baked into
+// every span the whole line is highlighted.
 func (m *model) pairLine(g *groupState, i, w int, active bool) string {
 	p := g.Pairs[i]
 	cursor := active && i == g.Cursor
 	var line string
 	line += m.iconSlot(cleanIcon(p.Icon), p.IconColor, g.IconW, cursor)
-	if i == g.Selected {
+	// The needle is hidden in the active column: the cursor highlight is the
+	// selection indicator there. In inactive columns the needle reappears on
+	// the previously selected option.
+	if !active && i == g.Selected {
 		muted := g.Src == config.SourceHistory
-		if cursor {
-			if muted {
-				line += m.sty.MarkerMutedCur.Render("▸")
-			} else {
-				line += m.sty.MarkerCursor.Render("▸")
-			}
-			line += m.sty.RowCursor.Render(" ")
+		if muted {
+			line += m.sty.MarkerMuted.Render("▸")
 		} else {
-			if muted {
-				line += m.sty.MarkerMuted.Render("▸")
-			} else {
-				line += m.sty.Marker.Render("▸")
-			}
-			line += " "
+			line += m.sty.Marker.Render("▸")
 		}
+		line += " "
 	} else if cursor {
 		line += m.sty.RowCursor.Render("  ")
 	} else {
@@ -2135,16 +2133,28 @@ func (m *model) wrapHelpItems(items []helpItem) []string {
 	return lines
 }
 
-// commandPreview shows what Enter will run: the selected alias's command
-// with its selected (needle) options substituted.
+// commandPreview shows what Enter will run: the alias under the cursor's
+// command with the option under the cursor in the active column substituted
+// (the needle is hidden in the active column; the cursor is the selection).
 func (m *model) commandPreview() string {
-	m.ensureAliasSel()
-	m.ensureInited(m.selAlias)
-	alias := m.cfg.Aliases[m.selAlias]
+	m.ensureInited(m.curAlias)
+	alias := m.cfg.Aliases[m.curAlias]
 	if alias.Command == "" {
 		return m.sty.Error.Render("$ (no command defined for this alias)")
 	}
-	vars := m.currentVars(m.selAlias, m.aliases[m.selAlias])
+	// Build a temporary copy of the state with the active column's cursor
+	// applied as its selection, so the preview matches what Enter will run.
+	st := m.aliases[m.curAlias]
+	vars := m.currentVars(m.curAlias, st)
+	if m.curCol > 0 {
+		g := st.Groups[m.curCol-1]
+		vars[strings.ToUpper(g.Name)] = g.Pairs[g.Cursor].LongText
+		for varName, groupName := range alias.Vars {
+			if groupName == g.Name {
+				vars[varName] = g.Pairs[g.Cursor].LongText
+			}
+		}
+	}
 	out := m.sty.Status.Render("$ ")
 	last := 0
 	for _, loc := range cmdx.VarPattern.FindAllStringSubmatchIndex(alias.Command, -1) {

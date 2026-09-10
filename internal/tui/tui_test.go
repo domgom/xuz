@@ -172,12 +172,9 @@ func TestNavigationSelectAndRun(t *testing.T) {
 	send(t, m, downKey)
 	send(t, m, spaceKey) // select qwen-3.6-35B-A3B
 	send(t, m, tabKey)   // context column
-	send(t, m, downKey)
-	send(t, m, spaceKey) // select 256k
-	send(t, m, upKey)    // clears the status line so the preview shows again
-
-	mustContain(t, m.View(), "/models/small.gguf", "262144")
-
+	send(t, m, downKey)  // cursor -> 256k
+	// Enter runs the cursor's row in the active column (256k) and the
+	// previously selected option in the inactive column (qwen-3.6-35B-A3B).
 	send(t, m, enterKey)
 	if !m.doRun {
 		t.Fatal("doRun not set after Enter")
@@ -210,10 +207,10 @@ func TestAliasColumnNavigation(t *testing.T) {
 	if m.curAlias != 1 || m.curCol != 0 {
 		t.Fatalf("after down: col=%d alias=%d, want col=0 alias=1", m.curCol, m.curAlias)
 	}
-	// The cursor moved to "other": its option columns are shown, but the
-	// selection (▸ needle) and the command preview stay on the preselected
-	// alias (llama, first: no history).
-	mustContain(t, m.View(), "m1", "llama-server")
+	// The cursor moved to "other": its option columns are shown and the
+	// command preview follows the cursor (the needle is hidden in the active
+	// column; the cursor is the selection).
+	mustContain(t, m.View(), "m1", "echo other")
 }
 
 // mouseClick sends a left-button press at the given screen coordinates.
@@ -1341,8 +1338,10 @@ func TestShortModeInitialView(t *testing.T) {
 	}
 	mustContain(t, ansi.Strip(v), "filter █", "llama", "other",
 		"󱊷  exit · 󱁐 select · ↑↓←→ move · ↵ launch · / switch")
-	if !strings.Contains(lines[1], "▸ llama") {
-		t.Errorf("first row should mark the cursor alias, got %q", lines[1])
+	// The needle is hidden in the active column: the cursor highlight is the
+	// selection indicator. The first row is the cursor row (llama).
+	if !strings.Contains(lines[1], "llama") {
+		t.Errorf("first row should be the cursor alias (llama), got %q", lines[1])
 	}
 	// the filter input sits at the bottom of the list, not in the header
 	if !strings.Contains(lines[len(lines)-2], "filter █") {
@@ -1428,21 +1427,18 @@ func TestShortModeEnterLaunchesPreselection(t *testing.T) {
 	cfg := loadCfg(t)
 	m := newShortModel(t, cfg, "")
 	m.View()
-	// The selection (▸ needle) is on the preselected alias (llama, first:
-	// no history). Moving the cursor does not change it.
+	// Enter runs the alias under the cursor. Moving the cursor to "other"
+	// and pressing Enter runs "other", not the preselected alias.
 	send(t, m, downKey) // cursor -> "other"
-	if m.curAlias != 1 || m.selAlias != 0 {
-		t.Fatalf("after down: cursor=%d selection=%d, want 1/0", m.curAlias, m.selAlias)
+	if m.curAlias != 1 {
+		t.Fatalf("after down: cursor=%d, want 1", m.curAlias)
 	}
-	send(t, m, enterKey) // launch the selected alias with the preselected options
+	send(t, m, enterKey) // launch the alias under the cursor
 	if !m.doRun {
 		t.Fatal("enter in the alias list should run")
 	}
-	if m.runCmd != `llama-server -m "$MODEL" -c "$CONTEXT"` {
-		t.Errorf("runCmd = %q, want the selected alias' command", m.runCmd)
-	}
-	if got := m.runVars["MODEL"]; got != "/models/big.gguf" {
-		t.Errorf("MODEL = %q, want the !default option", got)
+	if m.runCmd != `echo other` {
+		t.Errorf("runCmd = %q, want the cursor alias' command (other)", m.runCmd)
 	}
 }
 
@@ -1492,9 +1488,10 @@ func TestShortModeSpaceOpensFirstColumn(t *testing.T) {
 		t.Errorf("header should be the group name, got %q", lines[0])
 	}
 	mustContain(t, ansi.Strip(v), "qwen-3.8-27B", "qwen-3.6-35B-A3B", "󱊷  exit", "󱁐 select", "/ switch")
-	// the default option carries the selection marker
-	if line := lineContaining(t, v, "qwen-3.8-27B"); !strings.Contains(line, "▸") {
-		t.Errorf("default option should carry the marker: %q", line)
+	// The needle is hidden in the active column: the cursor highlight is the
+	// selection indicator. The default option (qwen-3.8-27B) is the cursor row.
+	if line := lineContaining(t, v, "qwen-3.8-27B"); strings.Contains(line, "▸") {
+		t.Errorf("the needle should be hidden in the active column: %q", line)
 	}
 }
 
@@ -1563,7 +1560,7 @@ func TestShortModeBackToSearch(t *testing.T) {
 	if strings.Contains(lines[0], "llama") {
 		t.Errorf("header should not carry the alias rows, got %q", lines[0])
 	}
-	mustContain(t, v, "▸ llama", "other") // all aliases listed, needle on llama
+	mustContain(t, v, "llama", "other") // all aliases listed; needle hidden in active column
 	// left/shift+tab from the first column goes back as well
 	send(t, m, spaceKey)  // -> model column again
 	send(t, m, shiftTabK) // left from the first column
@@ -1700,12 +1697,8 @@ func TestShortModeBackKeepsEmptyFilterAndNeedle(t *testing.T) {
 			m.curAlias, m.selAlias)
 	}
 	v := ansi.Strip(m.View())
-	if !strings.Contains(v, "▸ llama") {
-		t.Errorf("the needle must be on llama:\n%s", v)
-	}
-	if strings.Contains(v, "▸ dsh") {
-		t.Errorf("the needle must not be on dsh:\n%s", v)
-	}
+	// The needle is hidden in the active column: the cursor highlight is the
+	// selection indicator. All aliases are listed; the cursor is on llama.
 	for _, a := range []string{"llama", "dsh", "ls", "tf-plan"} {
 		if !strings.Contains(v, a) {
 			t.Errorf("empty search should list every alias, %q missing:\n%s", a, v)
@@ -2116,8 +2109,10 @@ aliases:
 	if !strings.Contains(view, devKey) {
 		t.Errorf("dev key not rendered in #7b42bc:\n%s", view)
 	}
-	if !strings.Contains(ansi.Strip(view), "▸ dev") {
-		t.Errorf("dev (the !default+color option) not preselected:\n%s", view)
+	// The needle is hidden in the active column: the cursor highlight is the
+	// selection indicator. dev is the cursor row (the !default option).
+	if !strings.Contains(ansi.Strip(view), "dev") {
+		t.Errorf("dev (the !default+color option) not rendered:\n%s", view)
 	}
 	// The key is in the tag's color; the value stays in the muted value
 	// color, not the tag's.
@@ -2168,39 +2163,27 @@ func TestAliasIconRendersLeftOfName(t *testing.T) {
   plain:
     command: echo plain
 `)
-	// Full mode, starting on a plain alias (a user selection: the ▸ needle
-	// marks it): every icon alias shows its icon left of its name. The icon
-	// (3 cells) fills the slot, so the marker follows it directly.
+	// Full mode, starting on a plain alias: every icon alias shows its icon
+	// left of its name. The needle is hidden in the active column; the cursor
+	// highlight is the selection indicator.
 	m := newModel(t, cfg, "plain")
 	view := m.View()
 	mustContain(t, view,
 		"▓▒░  tf-plan", // icon, then the two marker spaces, then the name
 		"▓▒░  also")
-	// The selected row: blank slot (plain has no icon), then the needle,
-	// then the name.
-	if line := plainLine(t, view, "▸ plain"); !strings.Contains(line, "   ▸ plain") {
-		t.Errorf("selected row = %q, want blank slot then the needle then the name", line)
-	}
-	if strings.Contains(view, "▸ tf-plan") || strings.Contains(view, "▸ also") {
-		t.Errorf("the needle must stay on the selected alias:\n%s", view)
+	// The cursor row (plain): blank slot (plain has no icon), then the name.
+	// No needle in the active column.
+	if line := plainLine(t, view, "plain"); strings.Contains(line, "▸") {
+		t.Errorf("the needle should be hidden in the active column: %q", line)
 	}
 
-	// Move the cursor onto an icon alias: the highlight follows the cursor,
-	// the ▸ needle stays on the selected alias; the icon stays left of the
-	// name, ahead of the marker slot.
+	// Move the cursor onto an icon alias: the highlight follows the cursor;
+	// the icon stays left of the name, ahead of the marker slot.
 	send(t, m, upKey) // cursor: plain -> also
 	view = m.View()
-	if strings.Contains(view, "▸ also") {
-		t.Errorf("the needle must not follow the cursor:\n%s", view)
-	}
 	line := plainLine(t, view, "▓▒░  also")
 	if iIcon, iMark := strings.Index(line, "▓▒░"), strings.Index(line, "  also"); iIcon < 0 || iMark < 0 || iIcon > iMark {
 		t.Errorf("cursor row for an icon alias = %q, want icon then the marker spaces then the name", line)
-	}
-	// The selected row keeps the needle (blank slot, then the marker, then
-	// the name), and the name starts at the same cell as on the icon rows.
-	if line := plainLine(t, view, "▸ plain"); !strings.Contains(line, "   ▸ plain") {
-		t.Errorf("selected row = %q, want blank slot then the needle then the name", line)
 	}
 }
 
@@ -2217,7 +2200,9 @@ func TestAliasIconShortMode(t *testing.T) {
 `)
 	m := newShortModel(t, cfg, "") // starts in the alias search on tf-plan
 	view := m.View()
-	mustContain(t, view, "▓▒░▸ tf-plan", "▓▒░  also", "     plain")
+	// The needle is hidden in the active column: the cursor highlight is the
+	// selection indicator. tf-plan is the cursor row.
+	mustContain(t, view, "▓▒░  tf-plan", "▓▒░  also", "     plain")
 }
 
 // TestAliasIconLiteralEmoji guards the emoji form of the icon key: the
@@ -2249,7 +2234,9 @@ func TestAliasIconLiteralEmoji(t *testing.T) {
 	}
 	send(t, m, tea.WindowSizeMsg{Width: 100, Height: 24})
 	view := m.View()
-	mustContain(t, view, "🚀  tf-plan", "▸ plain")
+	// The needle is hidden in the active column: the cursor highlight is the
+	// selection indicator. plain is the cursor row.
+	mustContain(t, view, "🚀  tf-plan", "plain")
 	// No cache dir for a literal icon.
 	if _, err := os.Stat(filepath.Join(dir, "icons_cache")); !os.IsNotExist(err) {
 		t.Errorf("a literal (emoji) icon must not create a cache dir: %v", err)
@@ -2332,16 +2319,17 @@ func TestPairIconColumnSlot(t *testing.T) {
 	if cd, cs, cp := cellOf(d, "dev"), cellOf(s, "stag"), cellOf(p, "prod"); cd != 4 || cs != 4 || cp != 4 {
 		t.Errorf("env keys do not start at cell 4: dev@%d stag@%d prod@%d:\n%s\n%s\n%s", cd, cs, cp, d, s, p)
 	}
-	// The icon rows: icon + (padding) + marker + key; the no-icon row: the
-	// blank slot + marker + key.
-	if !strings.HasPrefix(d, "🏠▸ dev") {
-		t.Errorf("dev row = %q, want icon 🏠 then the needle", d)
+	// The needle is hidden in the active column: the cursor highlight is the
+	// selection indicator. The icon rows: icon + (padding) + marker spaces +
+	// key; the no-icon row: the blank slot + marker spaces + key.
+	if !strings.HasPrefix(d, "🏠  dev") {
+		t.Errorf("dev row = %q, want icon 🏠 then marker spaces then the key", d)
 	}
 	if !strings.HasPrefix(p, "⚠   prod") {
 		t.Errorf("prod row = %q, want icon ⚠ + slot padding + marker spaces", p)
 	}
 	if !strings.HasPrefix(s, "    stag") {
-		t.Errorf("no-icon row must carry the blank slot + marker: %q", s)
+		t.Errorf("no-icon row must carry the blank slot + marker spaces: %q", s)
 	}
 	// The alias column is aligned the same way: names start at slot (2) +
 	// marker (2).
@@ -2515,11 +2503,11 @@ func appendHistoryFor(t *testing.T, alias string) (string, []history.Entry) {
 	return hp, entries
 }
 
-// TestAliasNeedleStaysOnSelection guards the alias column's needle: it marks
-// the selected alias (preselected like an option group: history > first
-// alias) and does not follow the cursor; the cursor row carries only the
-// background highlight.
-func TestAliasNeedleStaysOnSelection(t *testing.T) {
+// TestAliasNeedleHiddenInActiveColumn guards the alias column's needle: it
+// is hidden in the active column (the cursor highlight is the selection
+// indicator) and reappears in inactive columns on the previously selected
+// alias.
+func TestAliasNeedleHiddenInActiveColumn(t *testing.T) {
 	prev := lipgloss.ColorProfile()
 	lipgloss.SetColorProfile(termenv.TrueColor)
 	defer lipgloss.SetColorProfile(prev)
@@ -2531,25 +2519,21 @@ func TestAliasNeedleStaysOnSelection(t *testing.T) {
 		t.Fatalf("selected alias = %d (%s), want 0 (%s)",
 			m.selAlias, m.selAliasSrc, config.SourceFirst)
 	}
-	// Strip the escapes: the needle row (also the cursor row) is built from
-	// interleaved styled spans, so the plain text only appears after the
-	// styles come off.
-	if !strings.Contains(ansi.Strip(view), "▸ llama") {
-		t.Errorf("the first alias must carry the needle:\n%s", view)
-	}
-	if strings.Contains(ansi.Strip(view), "▸ other") {
-		t.Errorf("the needle must not sit on the unselected alias:\n%s", view)
+	// The needle is hidden in the active column (the alias column): no ▸ in
+	// the alias column's inner content.
+	if inner := colInners(t, aliasBoxRow(t, m, "llama"))[0]; strings.Contains(inner, "▸") {
+		t.Errorf("the needle must be hidden in the active column:\n%s", view)
 	}
 
-	// Move the cursor: the highlight follows, the needle stays.
+	// Move the cursor: the highlight follows; the needle stays hidden.
 	send(t, m, downKey)
 	if m.curAlias != 1 || m.selAlias != 0 {
-		t.Fatalf("cursor=%d selection=%d, want 1/0 (selection does not follow the cursor)",
+		t.Fatalf("cursor=%d selection=%d, want 1/0",
 			m.curAlias, m.selAlias)
 	}
 	view = m.View()
-	if !strings.Contains(ansi.Strip(view), "▸ llama") || strings.Contains(ansi.Strip(view), "▸ other") {
-		t.Errorf("the needle must stay on llama while the cursor moves:\n%s", view)
+	if inner := colInners(t, aliasBoxRow(t, m, "other"))[0]; strings.Contains(inner, "▸") {
+		t.Errorf("the needle must stay hidden in the active column:\n%s", view)
 	}
 	// The cursor row (other) is fully highlighted.
 	assertRowCellsHighlight(t, m, "alias cursor row", aliasBoxRow(t, m, "other"), 0)
@@ -2579,7 +2563,7 @@ func TestAliasNeedleMutedFromHistory(t *testing.T) {
 	const mutedRGB = "38;2;86;95;137"
 
 	// The last launch was "other": the selection (and the cursor, which
-	// starts on it) is there, and the needle is gray.
+	// starts on it) is there. The needle is hidden in the active column.
 	if m.selAlias != 1 || m.selAliasSrc != config.SourceHistory {
 		t.Fatalf("selection = %d (%s), want 1 (%s)",
 			m.selAlias, m.selAliasSrc, config.SourceHistory)
@@ -2587,16 +2571,16 @@ func TestAliasNeedleMutedFromHistory(t *testing.T) {
 	if m.curAlias != 1 {
 		t.Fatalf("cursor = %d, want 1 (starts on the selected alias)", m.curAlias)
 	}
-	// Only the alias column's inner: the other box of the line may carry a
-	// needle of its own.
-	if inner := colInnersRaw(t, aliasBoxRow(t, m, "other"))[0]; !strings.Contains(inner, "▸") || !strings.Contains(inner, mutedRGB) {
-		t.Errorf("the history selection must carry the muted needle:\n%s", view)
+	// The needle is hidden in the active column: no ▸ in the alias column.
+	if inner := colInners(t, aliasBoxRow(t, m, "other"))[0]; strings.Contains(inner, "▸") {
+		t.Errorf("the needle must be hidden in the active column:\n%s", view)
 	}
 	if inner := colInners(t, aliasBoxRow(t, m, "llama"))[0]; strings.Contains(inner, "▸") {
 		t.Errorf("llama must not carry the needle:\n%s", view)
 	}
 
-	// Space selects the alias under the cursor: the needle turns green.
+	// Space selects the alias under the cursor: the selection source becomes
+	// user. The needle stays hidden in the active column.
 	send(t, m, spaceKey)
 	view = m.View()
 	if m.selAlias != 1 || m.selAliasSrc != srcUser {
@@ -2605,17 +2589,16 @@ func TestAliasNeedleMutedFromHistory(t *testing.T) {
 	if m.status != "alias: other" {
 		t.Errorf("status = %q, want %q", m.status, "alias: other")
 	}
-	if inner := colInnersRaw(t, aliasBoxRow(t, m, "other"))[0]; !strings.Contains(inner, "▸") || !strings.Contains(inner, selectedRGB) {
-		t.Errorf("the user selection must carry the green needle:\n%s", view)
+	if inner := colInners(t, aliasBoxRow(t, m, "other"))[0]; strings.Contains(inner, "▸") {
+		t.Errorf("the needle must stay hidden in the active column:\n%s", view)
 	}
-	// The needle row is also the cursor row: the whole row is highlighted.
-	assertRowCellsHighlight(t, m, "needle + cursor row", aliasBoxRow(t, m, "other"), 0)
+	// The cursor row is fully highlighted.
+	assertRowCellsHighlight(t, m, "cursor row", aliasBoxRow(t, m, "other"), 0)
 }
 
-// TestAliasEnterRunsSelected guards Enter in the alias column: it launches
-// the selected alias (the ▸ needle row) with its preselected options, not
-// the alias under the cursor.
-func TestAliasEnterRunsSelected(t *testing.T) {
+// TestAliasEnterRunsCursor guards Enter in the alias column: it launches the
+// alias under the cursor with its preselected options.
+func TestAliasEnterRunsCursor(t *testing.T) {
 	cfg := loadCfg(t)
 	hp, entries := appendHistoryFor(t, "other")
 	m, err := New(Options{Cfg: cfg, HistPath: hp, DryRun: true})
@@ -2625,19 +2608,19 @@ func TestAliasEnterRunsSelected(t *testing.T) {
 	m.history = entries
 	send(t, m, tea.WindowSizeMsg{Width: 100, Height: 24})
 	m.View()
-	if m.selAlias != 1 || m.curAlias != 1 {
-		t.Fatalf("selection/cursor = %d/%d, want 1/1 (from history)", m.selAlias, m.curAlias)
+	if m.curAlias != 1 {
+		t.Fatalf("cursor = %d, want 1 (from history)", m.curAlias)
 	}
-	send(t, m, upKey) // cursor: other -> llama; the selection stays
-	if m.curAlias != 0 || m.selAlias != 1 {
-		t.Fatalf("cursor=%d selection=%d, want 0/1", m.curAlias, m.selAlias)
+	send(t, m, upKey) // cursor: other -> llama
+	if m.curAlias != 0 {
+		t.Fatalf("cursor = %d, want 0", m.curAlias)
 	}
 	send(t, m, enterKey)
 	if !m.doQuit {
 		t.Fatal("dry-run enter should quit")
 	}
-	if m.dryCmd != "echo other" {
-		t.Errorf("dryCmd = %q, want the selected alias' command", m.dryCmd)
+	if !strings.Contains(m.dryCmd, "llama-server") {
+		t.Errorf("dryCmd = %q, want the cursor alias' command (llama)", m.dryCmd)
 	}
 }
 
@@ -2657,15 +2640,17 @@ func TestStartAliasSelects(t *testing.T) {
 	if m.selAlias != 0 || m.selAliasSrc != srcUser {
 		t.Fatalf("selection = %d (%s), want 0 (%s)", m.selAlias, m.selAliasSrc, srcUser)
 	}
-	if !strings.Contains(view, "▸ llama") || strings.Contains(view, "▸ other") {
-		t.Errorf("the start alias must carry the needle, not the history alias:\n%s", view)
+	// Starting with StartAlias puts the cursor in the first option column
+	// (curCol=1), so the alias column is inactive and shows the needle on the
+	// start alias (llama). The option column is active and hides its needle.
+	if !strings.Contains(view, "▸ llama") {
+		t.Errorf("the start alias must carry the needle in the inactive alias column:\n%s", view)
 	}
 }
 
-// TestCommandPreviewFollowsSelectedAlias guards the live command preview: it
-// shows the selected alias's command (what Enter will run), not the alias
-// under the cursor's.
-func TestCommandPreviewFollowsSelectedAlias(t *testing.T) {
+// TestCommandPreviewFollowsCursor guards the live command preview: it shows
+// the alias under the cursor's command (what Enter will run).
+func TestCommandPreviewFollowsCursor(t *testing.T) {
 	cfg := loadCfg(t)
 	hp, entries := appendHistoryFor(t, "other")
 	m, err := New(Options{Cfg: cfg, HistPath: hp})
@@ -2676,11 +2661,11 @@ func TestCommandPreviewFollowsSelectedAlias(t *testing.T) {
 	send(t, m, tea.WindowSizeMsg{Width: 100, Height: 24})
 	m.View()
 	if got := ansi.Strip(m.commandPreview()); !strings.Contains(got, "echo other") {
-		t.Errorf("preview = %q, want the selected alias' command", got)
+		t.Errorf("preview = %q, want the cursor alias' command (other)", got)
 	}
 	send(t, m, upKey) // cursor: other -> llama
-	if got := ansi.Strip(m.commandPreview()); !strings.Contains(got, "echo other") || strings.Contains(got, "llama-server") {
-		t.Errorf("preview = %q, want it to stay on the selected alias", got)
+	if got := ansi.Strip(m.commandPreview()); !strings.Contains(got, "llama-server") {
+		t.Errorf("preview = %q, want it to follow the cursor to llama", got)
 	}
 }
 
@@ -2724,19 +2709,20 @@ func TestShortModeAliasNeedle(t *testing.T) {
 	if len(lines) != 1+shortListRows+2 {
 		t.Fatalf("short view has %d lines, want %d:\n%s", len(lines), 1+shortListRows+2, view)
 	}
-	// Row 0 = llama (plain), row 1 = other (needle; the cursor also starts
-	// on it).
-	if strings.Contains(lines[1], "▸") {
-		t.Errorf("the llama row must not carry the needle:\n%s", view)
+	// The needle is hidden in the active column: the cursor highlight is the
+	// selection indicator. No ▸ anywhere in the alias list.
+	for _, l := range lines {
+		if strings.Contains(l, "▸") {
+			t.Errorf("the needle must be hidden in the active column:\n%s", view)
+		}
 	}
-	if !strings.Contains(lines[2], "▸ other") {
-		t.Errorf("the other row must carry the needle:\n%s", view)
-	}
-	// Move the cursor: the highlight follows, the needle stays.
+	// Move the cursor: the highlight follows; the needle stays hidden.
 	send(t, m, upKey) // cursor: other -> llama
 	lines = strings.Split(m.View(), "\n")
-	if !strings.Contains(lines[2], "▸ other") || strings.Contains(lines[1], "▸") {
-		t.Errorf("the needle must stay on other while the cursor moves:\n%s", m.View())
+	for _, l := range lines {
+		if strings.Contains(l, "▸") {
+			t.Errorf("the needle must stay hidden in the active column:\n%s", m.View())
+		}
 	}
 	// Space selects the alias under the cursor and enters its first column.
 	send(t, m, spaceKey)
