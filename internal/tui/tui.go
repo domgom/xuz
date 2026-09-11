@@ -149,6 +149,24 @@ type model struct {
 	varsDisplay   []string        // display order of the global variables: config-file order, new variables appended at the end (rebuilt when stale)
 	globalsRect  rect            // where the GLOBALS panel was drawn in the last View (for mouse clicks)
 	lastFrameLines int           // number of lines the compact mode rendered in the last View (set in shortView); used to clear the frame on exit
+	konami       []string        // trailing keys of the easter-egg sequence so far (cleared on a mismatch)
+	showEgg      bool            // the easter egg panel is open
+}
+
+// konamiSequence is the key sequence that opens the easter egg. It is the
+// classic Konami code, and while testing it can be swapped for a shorter
+// stand-in (for example ["?"]) — see SetKonamiSequence.
+var konamiSequence = []string{
+	"up", "up", "down", "down",
+	"left", "right", "left", "right",
+	"b", "a",
+}
+
+// SetKonamiSequence replaces the easter-egg trigger sequence (for testing).
+func SetKonamiSequence(seq []string) {
+	if len(seq) > 0 {
+		konamiSequence = seq
+	}
 }
 
 // colLayout records where one column was rendered in the last View so mouse
@@ -409,6 +427,17 @@ func (m *model) handleKey(msg tea.KeyMsg) {
 		m.handleVarsKey(msg)
 		return
 	}
+	// Easter egg (short mode only): while the panel is open, "?" or esc
+	// closes it. The check happens before any mode-specific routing so a close
+	// press is not also counted as the start of a new sequence or swallowed by
+	// the search handler.
+	if m.short && m.showEgg && (msg.String() == "?" || msg.String() == "esc") {
+		m.closeEgg()
+		return
+	}
+	if m.short {
+		m.trackKonami(msg.String())
+	}
 	if msg.String() == "/" {
 		m.switchMode()
 		return
@@ -490,6 +519,42 @@ func (m *model) handleKey(msg tea.KeyMsg) {
 		m.showInfo = !m.showInfo
 		m.status = ""
 	}
+}
+
+// trackKonami feeds one key into the easter-egg sequence matcher. When the
+// full konamiSequence is entered (as a contiguous run of keys, whatever
+// happens in between other keys), it opens the egg panel and the sequence is
+// reset so it can be triggered again.
+func (m *model) trackKonami(key string) {
+	seq := konamiSequence
+	if len(seq) == 0 {
+		return
+	}
+	if key == seq[len(m.konami)] {
+		m.konami = append(m.konami, key)
+		if len(m.konami) == len(seq) {
+			m.openEgg()
+		}
+	} else {
+		// A mismatch: start over — but keep the run if the key itself
+		// begins the sequence.
+		m.konami = m.konami[:0]
+		if key == seq[0] {
+			m.konami = append(m.konami, key)
+		}
+	}
+}
+
+// openEgg shows the easter egg panel and resets the sequence so it can be
+// triggered again.
+func (m *model) openEgg() {
+	m.showEgg = true
+	m.konami = nil
+}
+
+// closeEgg hides the easter egg panel.
+func (m *model) closeEgg() {
+	m.showEgg = false
 }
 
 // switchMode toggles between the full-screen and compact modes: "/" in
@@ -1937,6 +2002,10 @@ func (m *model) shortView() string {
 		b.WriteString(m.searchLine(m.width))
 		b.WriteByte('\n')
 	}
+	if m.showEgg {
+		b.WriteString(m.eggPanelLines())
+		b.WriteByte('\n')
+	}
 	b.WriteString(m.shortFooter())
 	m.lastFrameLines = strings.Count(b.String(), "\n") + 1 // lines rendered (trailing \n is not a line)
 	return b.String()
@@ -2704,6 +2773,40 @@ func (m *model) commandPanelLines() []string {
 		rows = append(rows, padRight(l, innerW))
 	}
 	return strings.Split(m.box("command", rows, innerW, false), "\n")
+}
+
+// eggArt is the easter egg panel's ASCII art (the XUZ banner).
+const eggArt = `░██    ░██ ░██     ░██ ░█████████
+ ░██  ░██  ░██     ░██       ░██
+  ░██░██   ░██     ░██      ░██
+   ░███    ░██     ░██    ░███
+  ░██░██   ░██     ░██   ░██
+ ░██  ░██   ░██   ░██   ░██
+░██    ░██   ░██████   ░█████████`
+
+// eggPanelLines renders the easter egg panel: a full-width bordered box (the
+// same frame style as the COMMAND and GLOBALS panels) holding the XUZ ASCII
+// art, the project name, the repository URL and the license line. It is opened
+// by the Konami code (see konamiSequence) in the short mode and closed with
+// "?" or esc.
+func (m *model) eggPanelLines() string {
+	innerW := m.width - 4
+	if innerW < 2 {
+		innerW = 2
+	}
+	var rows []string
+	for _, l := range strings.Split(eggArt, "\n") {
+		rows = append(rows, padRight(l, innerW))
+	}
+	repo := "Repository: https://github.com/domgom/xuz"
+	if m.width > 0 && lipgloss.Width(repo) > innerW {
+		repo = truncateStr(repo, innerW)
+	}
+	rows = append(rows, padRight("", innerW))
+	rows = append(rows, padRight("XUZ (Choose)", innerW))
+	rows = append(rows, padRight(repo, innerW))
+	rows = append(rows, padRight("2026 - MIT License", innerW))
+	return m.box("xuz · easter egg", rows, innerW, false)
 }
 
 // infoLine is the optional detail line toggled with "?".

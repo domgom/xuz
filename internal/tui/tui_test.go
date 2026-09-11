@@ -1246,6 +1246,85 @@ func TestFooterHelpLines(t *testing.T) {
 	}
 }
 
+// TestEasterEggShortMode opens the easter egg panel in the compact mode with
+// the (swapped-in) "?" sequence, checks its contents, and closes it again. The
+// real Konami code is swapped for a short stand-in for testing; the original
+// sequence is restored before the test ends.
+func TestEasterEggShortMode(t *testing.T) {
+	cfg := loadCfg(t)
+	m := newShortModel(t, cfg, "") // alias search phase
+
+	orig := konamiSequence
+	SetKonamiSequence([]string{"?"})
+	t.Cleanup(func() { SetKonamiSequence(orig) })
+
+	if m.showEgg {
+		t.Fatal("egg panel open before the sequence")
+	}
+	send(t, m, questionKey) // "?" = the whole (stand-in) sequence
+	if !m.showEgg {
+		t.Fatal("egg panel not open after the sequence")
+	}
+	view := ansi.Strip(m.View())
+	for _, want := range []string{
+		"░██    ░██ ░██     ░██ ░█████████",
+		"XUZ (Choose)",
+		"Repository: https://github.com/domgom/xuz",
+		"2026 - MIT License",
+	} {
+		if !strings.Contains(view, want) {
+			t.Errorf("egg panel missing %q\n--- view ---\n%s", want, m.View())
+		}
+	}
+
+	send(t, m, questionKey) // "?" closes the open panel
+	if m.showEgg {
+		t.Fatal("egg panel still open after ?")
+	}
+	if strings.Contains(ansi.Strip(m.View()), "XUZ (Choose)") {
+		t.Error("egg panel content still rendered after closing")
+	}
+
+	// The sequence can be triggered again, and esc closes too.
+	send(t, m, questionKey) // opens again
+	if !m.showEgg {
+		t.Fatal("egg panel not open on second trigger")
+	}
+	send(t, m, escKey) // esc closes too
+	if m.showEgg {
+		t.Fatal("egg panel still open after esc")
+	}
+
+	// Every line must fit the width.
+	for i, line := range strings.Split(m.View(), "\n") {
+		if w := lipgloss.Width(line); w > 100 {
+			t.Errorf("line %d is %d columns wide (> 100): %q", i, w, line)
+		}
+	}
+}
+
+// TestEasterEggIgnoredInFullMode checks that the easter egg sequence has no
+// effect in the full mode: the panel stays closed and its content is never
+// rendered.
+func TestEasterEggIgnoredInFullMode(t *testing.T) {
+	cfg := loadCfg(t)
+	m := newModel(t, cfg, "") // start in the alias column (full mode)
+
+	orig := konamiSequence
+	SetKonamiSequence([]string{"?"})
+	t.Cleanup(func() { SetKonamiSequence(orig) })
+
+	send(t, m, questionKey) // the whole (stand-in) sequence
+	if m.showEgg {
+		t.Fatal("egg panel open in full mode")
+	}
+	if strings.Contains(ansi.Strip(m.View()), "XUZ (Choose)") {
+		t.Error("egg panel content rendered in full mode")
+	}
+	// The "?" press still behaves as the normal info-line toggle.
+	mustContain(t, m.View(), "config: ", "theme: ")
+}
+
 // TestCommandPanelWrapsInsteadOfCutting guards the full mode's bottom COMMAND
 // panel on a narrow terminal: a wide preview must overflow onto extra rows
 // inside the bordered panel instead of being truncated, and the column boxes
