@@ -148,6 +148,7 @@ type model struct {
 	varsStatus    string          // transient message shown in the GLOBALS panel's bottom line only (never in the footer status line)
 	varsDisplay   []string        // display order of the global variables: config-file order, new variables appended at the end (rebuilt when stale)
 	globalsRect  rect            // where the GLOBALS panel was drawn in the last View (for mouse clicks)
+	lastFrameLines int           // number of lines the compact mode rendered in the last View (set in shortView); used to clear the frame on exit
 }
 
 // colLayout records where one column was rendered in the last View so mouse
@@ -1937,6 +1938,7 @@ func (m *model) shortView() string {
 		b.WriteByte('\n')
 	}
 	b.WriteString(m.shortFooter())
+	m.lastFrameLines = strings.Count(b.String(), "\n") + 1 // lines rendered (trailing \n is not a line)
 	return b.String()
 }
 
@@ -2998,6 +3000,9 @@ func startDetached(command string, vars map[string]string, logPath string) int {
 		fmt.Fprintln(os.Stderr, "xuz: "+err.Error())
 		return 127
 	}
+	pid := cmd.Process.Pid
+	fmt.Printf("$ %s\n", command)
+	fmt.Printf("PID: %d\n", pid)
 	return 0
 }
 
@@ -3019,6 +3024,17 @@ func Run(opts Options) int {
 	if entries, err := history.Load(m.histPath); err == nil {
 		m.history = entries
 	}
+	// A short-mode pass renders inline on the main screen and leaves its frame
+	// there when it exits, so after any short-mode pass (a "/" switch or a
+	// final exit) the screen is cleared with a full erase + home. This is done
+	// AFTER p.Run returns (never while a program is alive, so it cannot race
+	// the renderer's exit sequence) and uses a full screen clear rather than
+	// erasing a fixed number of lines, because the cursor's final row is not
+	// guaranteed and after a mode switch the visible frame may be from the
+	// other mode. A full-mode pass runs on the alternate screen, which
+	// bubbletea restores on exit, so it needs no clear. On a piped stdout
+	// nothing was rendered (View returned ""), so there is never anything to
+	// clear.
 	for {
 		var progOpts []tea.ProgramOption
 		if !m.short {
@@ -3031,21 +3047,19 @@ func Run(opts Options) int {
 			return 1
 		}
 		m = final.(*model)
+		// The pass that just ran was in short mode and left its inline frame
+		// on the main screen; clear it before the next program (a "/" switch)
+		// or the exit output. A full-mode pass needs no clear (the alternate
+		// screen is restored by bubbletea).
+		if m.short && m.lastFrameLines > 0 {
+			clearScreenHome()
+		}
 		if m.modeSwitch {
-			// "/": restart in the other mode with the state preserved.
-			// doQuit is what ended the previous program; clear it so the new
-			// one does not immediately quit on its first message.
+			// "/": restart in the other mode with the state preserved. doQuit
+			// is what ended the previous program; clear it so the new one does
+			// not immediately quit on its first message.
 			m.modeSwitch = false
 			m.doQuit = false
-			if m.short {
-				// Re-entering the compact mode: the previous inline frame is
-				// still on screen (the cursor sits one row below it, where
-				// the renderer erased the last line on exit), so move back
-				// above it and wipe it; otherwise the new frame would render
-				// stacked under the old one.
-				const frameLines = 1 + shortListRows + 1 // header + rows + tooltip
-				_, _ = os.Stdout.WriteString(fmt.Sprintf("\x1b[%dA\x1b[J", frameLines-1))
-			}
 			continue
 		}
 		if m.doRun {
@@ -3068,12 +3082,24 @@ func Run(opts Options) int {
 			return 0
 		}
 		if !m.doRun {
+			// Esc / q: nothing was run, so leave the screen clean.
 			return 0
 		}
 		// The picker never reopens after a run, whatever the outcome: xuz
 		// exits with the command's status.
 		return runChild(m.runCmd, m.runVars)
 	}
+}
+
+// clearScreenHome erases the whole screen and moves the cursor to the top-left
+// corner, so the next program or the exit output starts from a clean slate. It
+// is called after a short-mode pass has exited and left its inline frame on
+// the main screen; unlike erasing a fixed number of lines, it does not depend
+// on where bubbletea left the cursor (which is not guaranteed) or on how many
+// lines the frame had (the visible frame may be from the other mode after a
+// "/" switch). On a piped stdout nothing was rendered, so this is never called.
+func clearScreenHome() {
+	fmt.Print("\x1b[2J\x1b[H")
 }
 
 // runChild executes the command via sh -c with the selected options exported
@@ -3095,6 +3121,9 @@ func runChild(command string, vars map[string]string) int {
 		fmt.Fprintln(os.Stderr, "xuz: "+err.Error())
 		return 127
 	}
+	pid := cmd.Process.Pid
+	fmt.Printf("$ %s\n", command)
+	fmt.Printf("PID: %d\n", pid)
 	go func() {
 		for s := range sig {
 			if cmd.Process != nil {
