@@ -109,8 +109,6 @@ class TTY:
 CONFIG = """\
 theme: default
 remember_last: 100  # well above the entry count, so history never trims mid-suite
-last_used:
-  - small
 aliases:
   echoer:
     options:
@@ -479,9 +477,8 @@ def test_add_delete_save(binary, home):
     tty.finish()
     with open(cfg_path) as f:
         disk = f.read()
-    # "small" itself still appears in last_used, so check the option's value
     check("save wrote the config",
-          "/models/mid.gguf" in disk and "/models/big.gguf" in disk and "/models/small.gguf" not in disk, disk)
+          "/models/mid.gguf" in disk and "/models/big.gguf" in disk and "small: !default /models/small.gguf" not in disk, disk)
 
 
 def test_decline_save(binary, home):

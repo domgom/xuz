@@ -206,8 +206,7 @@ alias names), where the top level wins when both are present.
 
 So with the default order: a group's `!default` tag wins over everything,
 then the history, then the first option. To pin a preferred option, tag it
-with `!default` — that is its whole job (a hand-written preference list such
-as the old `last_used` was redundant for that). With
+with `!default` — that is its whole job. With
 `selection_precedence: [history]` your last-run options win over any
 `!default` tag instead — useful when you want the picker to "remember" what
 you actually ran rather than a pinned default.

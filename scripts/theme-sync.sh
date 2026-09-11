@@ -95,8 +95,8 @@ map_theme() {
   fi
 
   # Write a themes: block into the config. We insert it before the aliases:
-  # key so the canonical format is preserved (themes comes after last_used
-  # but before aliases, per config.go's Save writer).
+  # key so the canonical format is preserved (themes comes after
+  # selection_precedence but before aliases, per config.go's Save writer).
 
   local theme_block=""
   theme_block+="# Auto-generated from Omarchy theme '$slug'. Do not edit manually.\n"
