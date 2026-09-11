@@ -1,0 +1,32 @@
+name: release
+
+on:
+  push:
+    tags: ["v*"]   # pushing v0.1.0 creates/updates the release
+
+jobs:
+  build-and-publish:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      - name: Build
+        run: make all   # produces dist/xuz-darwin-arm64 and dist/xuz-linux-amd64
+
+      - name: Checksums
+        run: sha256sum dist/xuz-darwin-arm64 dist/xuz-linux-amd64 > SHA256SUMS
+
+      - name: Publish to GitHub Release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release create "${GITHUB_REF_NAME#v}" \
+            --title "xuz ${GITHUB_REF_NAME}" \
+            --notes "See commit history." \
+            dist/xuz-darwin-arm64 \
+            dist/xuz-linux-amd64 \
+            SHA256SUMS
