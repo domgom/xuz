@@ -24,7 +24,7 @@ jobs:
         env:
           # GITHUB_TOKEN is blocked from creating releases on this account;
           # use a fine-grained PAT with Contents: read/write.
-          GH_TOKEN: ${{ secrets.GITHUB_RELEASE_TOKEN }}
+          GH_TOKEN: ${{ secrets.PAT_RELEASE }}
         run: |
           gh release create "${GITHUB_REF_NAME#v}" \
             --title "xuz ${GITHUB_REF_NAME}" \
