@@ -3137,7 +3137,10 @@ func Run(opts Options) int {
 	// other mode. A full-mode pass runs on the alternate screen, which
 	// bubbletea restores on exit, so it needs no clear. On a piped stdout
 	// nothing was rendered (View returned ""), so there is never anything to
-	// clear.
+	// clear. The mode of the pass that just ran is captured BEFORE m is
+	// updated from the final model, because a "/" switch has already flipped
+	// m.short to the new mode by the time p.Run returns.
+	prevShort := m.short
 	for {
 		var progOpts []tea.ProgramOption
 		if !m.short {
@@ -3150,19 +3153,23 @@ func Run(opts Options) int {
 			return 1
 		}
 		m = final.(*model)
-		// The pass that just ran was in short mode and left its inline frame
-		// on the main screen; clear it before the next program (a "/" switch)
-		// or the exit output. A full-mode pass needs no clear (the alternate
-		// screen is restored by bubbletea).
-		if m.short && m.lastFrameLines > 0 {
+		// The pass that just ran was in short mode (prevShort) and left its
+		// inline frame on the main screen; clear it before the next program (a
+		// "/" switch) or the exit output. A full-mode pass needs no clear (the
+		// alternate screen is restored by bubbletea). prevShort is captured
+		// before m is updated, because a "/" switch flips m.short to the new
+		// mode before p.Run returns.
+		if prevShort && m.lastFrameLines > 0 {
 			clearScreenHome()
 		}
 		if m.modeSwitch {
 			// "/": restart in the other mode with the state preserved. doQuit
 			// is what ended the previous program; clear it so the new one does
-			// not immediately quit on its first message.
+			// not immediately quit on its first message. prevShort now reflects
+			// the mode of the pass about to run (m.short was just flipped).
 			m.modeSwitch = false
 			m.doQuit = false
+			prevShort = m.short
 			continue
 		}
 		if m.doRun {
