@@ -536,3 +536,25 @@ in containers that silently ignore it the TUI stays blank by design — it
 refuses to render into a 0x0 terminal — and the hermetic test suite
 (`go test ./...`, which drives the real TUI model key-by-key) is the
 verification fallback.
+
+### Debugging (dlv + VS Code)
+
+The picker is a Bubbletea TUI: it needs a controlling terminal, so VS Code's
+Go debugger cannot launch it directly (`dlv` starts the binary with pipes and
+no controlling TTY, and Bubbletea fails with `could not open a new TTY`).
+The workaround is to run `dlv` yourself from a real terminal — it inherits
+that terminal's TTY, so the picker works live under the debugger — and let
+VS Code attach as a remote client:
+
+```sh
+dlv debug ./cmd/xuz --headless --listen=127.0.0.1:40000 --api-version=2
+```
+
+Then in VS Code pick the **"xuz (remote, dlv in terminal)"** launch config
+(`.vscode/launch.json`, a `mode: "remote"` attach on port 40000) and press F5.
+Set breakpoints before attaching; trigger the code path in the picker and
+step/inspect in the editor while the TUI stays live in your terminal.
+
+For non-TTY paths (config loading, alias resolution), the plain launch works:
+use the **"xuz --dry-run"** config — `--dry-run` resolves non-interactively
+when no TTY is present.
